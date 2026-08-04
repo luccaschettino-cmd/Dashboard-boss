@@ -418,4 +418,4 @@ if __name__ == "__main__":
     print("Boss Dashboard — http://localhost:5000")
     print(f"Matrículas: {count_table('enrollments')} | Certificados: {count_table('certificates')}")
     print("=" * 50)
-    app.run(debug=True, port=5000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
