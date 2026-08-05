@@ -1,0 +1,9 @@
+cache.db
+.env
+__pycache__/
+*.pyc
+probe_*.py
+diagnostico.py
+teste.py
+check.py
+diag.py

@@ -26,10 +26,21 @@
   .header-right { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
   #cache-badge { font-size:11px; color:var(--muted); }
   #cache-badge b { color:var(--b2b); }
-  #sync-info { font-size:11px; color:var(--muted); max-width:280px; }
+  #cache-badge .sep { margin:0 4px; opacity:.4; }
+  #sync-info { font-size:11px; color:var(--muted); max-width:320px; }
+  .sync-group { display:flex; gap:6px; align-items:center; }
   #btn-sync { background:transparent; color:var(--muted); border:1px solid var(--border); border-radius:7px; padding:7px 14px; font-weight:600; font-size:12px; cursor:pointer; }
   #btn-sync:hover { border-color:var(--accent); color:var(--accent); }
   #btn-sync:disabled { opacity:.45; cursor:not-allowed; }
+  #btn-sync-completo { background:transparent; color:var(--muted); border:1px solid var(--border); border-radius:7px; padding:7px 11px; font-weight:600; font-size:11px; cursor:pointer; opacity:.6; }
+  #btn-sync-completo:hover { border-color:var(--muted); color:var(--text); opacity:1; }
+  #btn-sync-completo:disabled { opacity:.3; cursor:not-allowed; }
+  #ultimo-sync-modo { font-size:10px; color:var(--muted); opacity:.6; }
+
+  #ano-pills { display:flex; gap:4px; flex-wrap:wrap; }
+  .ano-pill { background:transparent; color:var(--muted); border:1px solid var(--border); border-radius:6px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer; transition:all .15s; }
+  .ano-pill:hover { border-color:var(--accent); color:var(--accent); }
+  .ano-pill.ativo { background:var(--accent); color:#000; border-color:var(--accent); }
 
   main { max-width:1200px; margin:0 auto; padding:28px; display:flex; flex-direction:column; gap:36px; }
 
@@ -37,11 +48,10 @@
   #empty-state h2 { font-size:17px; margin-bottom:10px; }
   #empty-state p { color:var(--muted); font-size:13px; line-height:1.6; }
 
-  /* Bloco com pergunta-título */
   .bloco-titulo { font-size:19px; font-weight:800; margin-bottom:4px; }
   .bloco-sub { font-size:13px; color:var(--muted); margin-bottom:20px; }
 
-  /* BLOCO 1 — Como estamos indo */
+  /* BLOCO 1 */
   .visao-row { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:16px; }
   @media (max-width:760px){ .visao-row{grid-template-columns:1fr;} }
   .card-grande { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:24px; }
@@ -52,7 +62,6 @@
   .comparativo.down { background:rgba(239,68,68,.13); color:var(--down); }
   .comparativo .txt { color:var(--muted); font-weight:500; margin-left:2px; }
 
-  /* Barra B2B/B2C */
   .split-wrap { margin-top:8px; }
   .split-bar { display:flex; height:36px; border-radius:8px; overflow:hidden; margin-bottom:12px; }
   .split-b2b { background:var(--b2b); display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#04231a; }
@@ -60,7 +69,7 @@
   .split-legenda { display:flex; gap:16px; font-size:12px; color:var(--muted); }
   .split-legenda .dot { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; }
 
-  /* BLOCO 2 — Recompra */
+  /* BLOCO 2 */
   .recompra-hero { background:linear-gradient(135deg, rgba(245,166,35,.12), rgba(245,166,35,.03)); border:1px solid rgba(245,166,35,.3); border-radius:14px; padding:28px; display:flex; align-items:center; justify-content:space-between; gap:24px; flex-wrap:wrap; }
   .recompra-texto { flex:1; min-width:280px; }
   .recompra-num { font-size:48px; font-weight:800; color:var(--accent); line-height:1; }
@@ -76,12 +85,15 @@
   #btn-excel:hover { filter:brightness(1.05); }
   #btn-excel:disabled { opacity:.5; cursor:wait; }
 
-  /* BLOCO 3 — De onde vem */
-  .charts-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  /* BLOCO 3 */
+  .charts-grid { display:grid; grid-template-columns:1.4fr 1fr; gap:18px; }
   @media (max-width:760px){ .charts-grid{grid-template-columns:1fr;} }
+  .charts-grid-bottom { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:18px; }
+  @media (max-width:760px){ .charts-grid-bottom{grid-template-columns:1fr;} }
   .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:22px; }
   .card h3 { font-size:11px; font-weight:700; color:var(--muted); letter-spacing:.06em; text-transform:uppercase; margin-bottom:18px; }
   .chart-wrap { position:relative; height:230px; }
+  .chart-wrap-donut { position:relative; height:230px; display:flex; align-items:center; justify-content:center; }
 
   .rank-list { list-style:none; display:flex; flex-direction:column; gap:8px; }
   .rank-item { display:flex; align-items:center; gap:9px; }
@@ -100,12 +112,16 @@
 <header>
   <div class="logo">
     <div class="logo-icon">B</div>
-    <div><h1>Boss Treinamentos</h1><span>Painel Semanal</span></div>
+    <div><h1>Boss Treinamentos</h1><span>Painel Operacional</span></div>
   </div>
   <div class="header-right">
+    <div id="ano-pills"></div>
     <div id="cache-badge"></div>
     <div id="sync-info"></div>
-    <button id="btn-sync" onclick="startSync()">⟳ Atualizar dados</button>
+    <div class="sync-group">
+      <button id="btn-sync" onclick="startSync('rapido')">⟳ Atualizar</button>
+      <button id="btn-sync-completo" onclick="startSync('completo')" title="Rebusca todo o histórico — leva alguns minutos">↺ Completo</button>
+    </div>
   </div>
 </header>
 
@@ -123,9 +139,9 @@
       <div class="bloco-sub">Vendas do mês e de onde vêm nossos alunos ativos.</div>
       <div class="visao-row">
         <div class="card-grande">
-          <div class="rotulo">Vendas este mês</div>
+          <div class="rotulo" id="kpi-label">Vendas este mês</div>
           <div class="numero" id="vendas-mes">—</div>
-          <div class="comparativo" id="vendas-comp"><span id="comp-icon"></span><span id="comp-pct"></span><span class="txt">vs mês passado</span></div>
+          <div class="comparativo" id="vendas-comp"><span id="comp-icon"></span><span id="comp-pct"></span><span class="txt" id="kpi-compare">vs mês passado</span></div>
         </div>
         <div class="card-grande">
           <div class="rotulo">Alunos ativos hoje</div>
@@ -175,14 +191,14 @@
     <!-- BLOCO 3 -->
     <section>
       <div class="bloco-titulo">De onde vem nosso dinheiro?</div>
-      <div class="bloco-sub">Maiores clientes empresariais e cursos mais vendidos.</div>
+      <div class="bloco-sub">Tendência mensal, origem geográfica e maiores clientes.</div>
       <div class="charts-grid">
         <div class="card"><h3>Vendas por mês — Empresas vs Avulsos</h3><div class="chart-wrap"><canvas id="trendChart"></canvas></div></div>
-        <div class="card"><h3>Cursos mais vendidos</h3><ul class="rank-list" id="rank-cursos"></ul></div>
+        <div class="card"><h3>Alunos avulsos por estado</h3><div class="chart-wrap-donut"><canvas id="geoChart"></canvas></div></div>
       </div>
-      <div class="card" style="margin-top:18px">
-        <h3>Maiores clientes empresariais (B2B)</h3>
-        <ul class="rank-list" id="rank-clientes"></ul>
+      <div class="charts-grid-bottom">
+        <div class="card"><h3>Cursos mais vendidos</h3><ul class="rank-list" id="rank-cursos"></ul></div>
+        <div class="card"><h3>Maiores clientes empresariais (B2B)</h3><ul class="rank-list" id="rank-clientes"></ul></div>
       </div>
     </section>
 
@@ -190,7 +206,9 @@
 </main>
 
 <script>
-let trendChart;
+let trendChart, geoChart;
+let anoSelecionado = new Date().getFullYear();
+
 function fmt(n){ return n?.toLocaleString("pt-BR") ?? "—"; }
 
 function renderRanking(listId, items, nameKey, countKey, cls=""){
@@ -204,26 +222,108 @@ function renderRanking(listId, items, nameKey, countKey, cls=""){
       <span class="rank-count">${fmt(item[countKey])}</span></li>`).join("");
 }
 
-function renderChart(data){
+function renderAnoPills(anos, anoAtivo){
+  const wrap = document.getElementById("ano-pills");
+  if(!anos?.length){ wrap.innerHTML=""; return; }
+  wrap.innerHTML = anos.map(a =>
+    `<button class="ano-pill${a===anoAtivo?' ativo':''}" onclick="selecionarAno(${a})">${a}</button>`
+  ).join("");
+}
+
+function selecionarAno(ano){
+  anoSelecionado = ano;
+  loadDashboard();
+}
+
+function renderTrendChart(data){
   const gc="#2e3250", tc="#7b82a0";
   if(trendChart) trendChart.destroy();
+
   trendChart = new Chart(document.getElementById("trendChart"),{
     type:"line",
-    data:{ labels:data.trend_mensal.map(t=>t.mes),
+    data:{
+      labels: data.trend_mensal.map(t => t.mes.slice(5)),
       datasets:[
-        {label:"Empresas (B2B)",data:data.trend_mensal.map(t=>t.b2b),borderColor:"#10b981",backgroundColor:"rgba(16,185,129,.12)",borderWidth:2.5,tension:.35,fill:true,pointRadius:4,pointBackgroundColor:"#10b981",pointBorderColor:"#0f1117",pointBorderWidth:2},
-        {label:"Avulsos (B2C)",data:data.trend_mensal.map(t=>t.b2c),borderColor:"#3b82f6",backgroundColor:"rgba(59,130,246,.12)",borderWidth:2.5,tension:.35,fill:true,pointRadius:4,pointBackgroundColor:"#3b82f6",pointBorderColor:"#0f1117",pointBorderWidth:2}
-      ]},
-    options:{responsive:true,maintainAspectRatio:false,
-      interaction:{intersect:false,mode:"index"},
-      plugins:{legend:{labels:{color:tc,font:{size:11},usePointStyle:true}}},
-      scales:{x:{ticks:{color:tc,font:{size:10}},grid:{color:gc}},y:{beginAtZero:true,ticks:{color:tc,font:{size:10}},grid:{color:gc}}}}
+        {
+          label:"Empresas (B2B)", data:data.trend_mensal.map(t=>t.b2b),
+          borderColor:"#10b981", backgroundColor:"rgba(16,185,129,.12)",
+          borderWidth:2.5, tension:.35, fill:true,
+          pointRadius:data.trend_mensal.map(t=>t.atual?7:4),
+          pointStyle:data.trend_mensal.map(t=>t.atual?'rectRot':'circle'),
+          pointBackgroundColor:data.trend_mensal.map(t=>t.atual?"#f5a623":"#10b981"),
+          pointBorderColor:"#0f1117", pointBorderWidth:2
+        },
+        {
+          label:"Avulsos (B2C)", data:data.trend_mensal.map(t=>t.b2c),
+          borderColor:"#3b82f6", backgroundColor:"rgba(59,130,246,.12)",
+          borderWidth:2.5, tension:.35, fill:true,
+          pointRadius:data.trend_mensal.map(t=>t.atual?7:4),
+          pointStyle:data.trend_mensal.map(t=>t.atual?'rectRot':'circle'),
+          pointBackgroundColor:data.trend_mensal.map(t=>t.atual?"#f5a623":"#3b82f6"),
+          pointBorderColor:"#0f1117", pointBorderWidth:2
+        }
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{intersect:false, mode:"index"},
+      plugins:{
+        legend:{labels:{color:tc, font:{size:11}, usePointStyle:true}},
+        tooltip:{
+          callbacks:{
+            title: ctx => {
+              const t = data.trend_mensal[ctx[0].dataIndex];
+              return t.mes + (t.atual ? " ★ mês atual" : "");
+            }
+          }
+        }
+      },
+      scales:{
+        x:{ticks:{color:tc, font:{size:10}}, grid:{color:gc}},
+        y:{beginAtZero:true, ticks:{color:tc, font:{size:10}}, grid:{color:gc}}
+      }
+    }
+  });
+}
+
+function renderGeoChart(geo){
+  if(geoChart) geoChart.destroy();
+  const wrap = document.getElementById("geoChart").parentElement;
+  if(!geo?.length){
+    wrap.innerHTML='<p style="color:var(--muted);font-size:12px;text-align:center">Sem dados geográficos<br><span style="font-size:11px">Sincronize para carregar alunos</span></p>';
+    return;
+  }
+  if(!document.getElementById("geoChart")){
+    wrap.innerHTML='<canvas id="geoChart"></canvas>';
+  }
+  const palette = [
+    "#3b82f6","#10b981","#f5a623","#8b5cf6","#ef4444",
+    "#06b6d4","#84cc16","#f97316","#ec4899","#a78bfa",
+    "#14b8a6","#fbbf24","#6366f1","#22d3ee","#fb923c",
+  ];
+  geoChart = new Chart(document.getElementById("geoChart"),{
+    type:"doughnut",
+    data:{
+      labels: geo.map(g=>g.uf),
+      datasets:[{
+        data: geo.map(g=>g.total),
+        backgroundColor: palette.slice(0, geo.length),
+        borderColor:"#0f1117", borderWidth:2, hoverOffset:6,
+      }]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false, cutout:"62%",
+      plugins:{
+        legend:{position:"right", labels:{color:"#7b82a0", font:{size:11}, boxWidth:12, padding:8}},
+        tooltip:{callbacks:{label: ctx=>` ${ctx.label}: ${fmt(ctx.raw)} alunos`}}
+      }
+    }
   });
 }
 
 async function loadDashboard(){
   try {
-    const res = await fetch("/api/dashboard");
+    const res = await fetch(`/api/dashboard?ano=${anoSelecionado}`);
     if(res.status===503){
       document.getElementById("empty-state").style.display="block";
       document.getElementById("content").style.display="none";
@@ -235,12 +335,14 @@ async function loadDashboard(){
 
     const r = data.resumo;
 
-    // Bloco 1
-    document.getElementById("vendas-mes").textContent = fmt(r.vendas_mes);
+    // KPI de vendas (label muda conforme o ano)
+    document.getElementById("kpi-label").textContent = r.kpi_label;
+    document.getElementById("kpi-compare").textContent = r.kpi_compare;
+    document.getElementById("vendas-mes").textContent = fmt(r.vendas_kpi);
     const comp = document.getElementById("vendas-comp");
     const up = r.var_pct >= 0;
-    comp.className = "comparativo " + (up ? "up":"down");
-    document.getElementById("comp-icon").textContent = up ? "↑":"↓";
+    comp.className = "comparativo " + (up ? "up" : "down");
+    document.getElementById("comp-icon").textContent = up ? "↑" : "↓";
     document.getElementById("comp-pct").textContent = Math.abs(r.var_pct) + "%";
 
     document.getElementById("total-ativo").textContent = fmt(r.total_matriculas_ativas);
@@ -253,24 +355,40 @@ async function loadDashboard(){
     document.getElementById("leg-b2b").textContent = fmt(r.b2b_ativas);
     document.getElementById("leg-b2c").textContent = fmt(r.b2c_ativas);
 
-    // Bloco 2
     const rc = data.recert;
     document.getElementById("recompra-total").textContent = fmt(rc.total);
     document.getElementById("fx-30").textContent = fmt(rc.r30);
     document.getElementById("fx-60").textContent = fmt(rc.r60);
     document.getElementById("fx-90").textContent = fmt(rc.r90);
 
-    // Bloco 3
     renderRanking("rank-cursos", data.top10_cursos, "curso", "matriculas");
     renderRanking("rank-clientes", data.top10_clientes, "empresa", "matriculas", "b2b");
-    renderChart(data);
+    renderTrendChart(data);
+    renderGeoChart(data.geo);
 
     if(data.cache_info){
-      document.getElementById("cache-badge").innerHTML = `<b>${fmt(data.cache_info.total_certificados)}</b> certificados`;
-      const d = new Date(data.cache_info.ultimo_sync);
-      document.getElementById("sync-info").textContent = "Dados de: " + d.toLocaleDateString("pt-BR");
+      const ci = data.cache_info;
+      renderAnoPills(ci.anos, anoSelecionado);
+      const partes = [
+        `<b>${fmt(ci.total_matriculas)}</b> matrículas`,
+        `<b>${fmt(ci.total_certificados)}</b> certificados`,
+        `<b>${fmt(ci.total_alunos)}</b> alunos`,
+      ];
+      document.getElementById("cache-badge").innerHTML = partes.join('<span class="sep">·</span>');
+      if(ci.ultimo_sync){
+        const d = new Date(ci.ultimo_sync);
+        const modo = ci.ultimo_sync_modo === "rapido" ? "rápido" : "completo";
+        document.getElementById("sync-info").textContent =
+          d.toLocaleDateString("pt-BR") + " " + d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) + " · " + modo;
+      }
     }
-  } catch(e){ console.error(e); }
+  } catch(e){
+    console.error(e);
+    document.getElementById("empty-state").style.display="block";
+    document.getElementById("content").style.display="none";
+    document.querySelector("#empty-state h2").textContent="Erro ao carregar dados";
+    document.querySelector("#empty-state p").textContent="Verifique a conexão ou tente sincronizar novamente.";
+  }
 }
 
 function baixarExcel(){
@@ -282,20 +400,22 @@ function baixarExcel(){
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(()=>{ btn.disabled=false; btn.textContent="⬇ Baixar lista em Excel"; }, 2500);
+  setTimeout(()=>{ btn.disabled=false; btn.innerHTML="⬇ Baixar lista em Excel"; }, 3000);
 }
 
-async function startSync(){
+async function startSync(modo="rapido"){
   const btn = document.getElementById("btn-sync");
+  const btnC = document.getElementById("btn-sync-completo");
   btn.disabled = true;
+  btnC.disabled = true;
   document.getElementById("sync-bar-wrap").style.display="block";
   document.getElementById("sync-bar").style.width="8%";
-  document.getElementById("sync-info").textContent="Iniciando...";
-  await fetch("/api/sync",{method:"POST"});
+  document.getElementById("sync-info").textContent = modo === "rapido" ? "Buscando novos registros..." : "Sync completo iniciado...";
+  await fetch("/api/sync", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({modo})});
   const poll = setInterval(async ()=>{
     try {
       const s = await (await fetch("/api/sync/status")).json();
-      document.getElementById("sync-info").textContent=s.progress;
+      document.getElementById("sync-info").textContent = s.progress;
       if(!s.running){
         clearInterval(poll);
         document.getElementById("sync-bar").style.width="100%";
@@ -303,6 +423,7 @@ async function startSync(){
           document.getElementById("sync-bar-wrap").style.display="none";
           document.getElementById("sync-bar").style.width="0%";
           btn.disabled=false;
+          btnC.disabled=false;
           loadDashboard();
         },800);
       }
