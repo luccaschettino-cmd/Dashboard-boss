@@ -919,6 +919,9 @@ def enviar_recert():
     emails_map = mapa_email()
     lista = compute_recert_lista(certificates, students_map, emails_map, mapa_canal(), mapa_empresa())
     candidatos = [x for x in lista if x.get("dias", 999) <= 90]
+    limite = int((request.json or {}).get("limite", 0))
+    if limite > 0:
+        candidatos = candidatos[:limite]
 
     email_status = {
         "running": True,

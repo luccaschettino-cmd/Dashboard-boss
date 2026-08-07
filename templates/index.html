@@ -222,7 +222,8 @@
         </div>
         <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
           <button id="btn-excel" onclick="baixarExcel()">⬇ Baixar lista em Excel</button>
-          <button class="btn-email" id="btn-email" onclick="enviarEmails()">✉ Enviar e-mails (90 dias)</button>
+          <button class="btn-email" id="btn-email" onclick="enviarEmails(100)">✉ Enviar e-mails (primeiros 100)</button>
+          <button onclick="enviarEmails(0)" style="background:transparent;border:none;color:var(--muted);font-size:11px;cursor:pointer;text-decoration:underline;padding:0">enviar para todos</button>
           <div style="display:flex;gap:6px;align-items:center;width:100%">
             <input id="input-email-teste" type="email" placeholder="seu@email.com" style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:12px;">
             <button onclick="testarEmail()" style="background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;cursor:pointer;padding:7px 10px;white-space:nowrap">Testar</button>
@@ -566,10 +567,13 @@ async function testarEmail(){
   }
 }
 
-async function enviarEmails(){
+async function enviarEmails(limite=0){
   const btn = document.getElementById("btn-email");
   const status = document.getElementById("email-status");
-  if(!confirm("Enviar e-mails para todos os alunos com certificado vencendo em até 90 dias?\n\nQuem já recebeu nos últimos 25 dias será pulado automaticamente.")) return;
+  const msg = limite > 0
+    ? `Enviar e-mails para os primeiros ${limite} alunos com certificado vencendo em até 90 dias?\n\nQuem já recebeu nos últimos 25 dias será pulado automaticamente.`
+    : "Enviar e-mails para TODOS os alunos com certificado vencendo em até 90 dias?\n\nQuem já recebeu nos últimos 25 dias será pulado automaticamente.";
+  if(!confirm(msg)) return;
   btn.disabled = true;
   btn.innerHTML = "Enviando...";
   status.style.color = "var(--muted)";
@@ -577,7 +581,7 @@ async function enviarEmails(){
   document.getElementById("email-progress-wrap").style.display = "block";
   document.getElementById("email-progress-bar").style.width = "0%";
   try {
-    const res = await fetch("/api/enviar_recert", { method:"POST", headers:{"Content-Type":"application/json"}, body:"{}" });
+    const res = await fetch("/api/enviar_recert", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({limite}) });
     const d = await res.json();
     if(d.erro){
       status.style.color = "var(--danger)";
