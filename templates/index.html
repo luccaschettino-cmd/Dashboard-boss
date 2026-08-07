@@ -95,6 +95,38 @@
   .chart-wrap { position:relative; height:230px; }
   .chart-wrap-donut { position:relative; height:230px; display:flex; align-items:center; justify-content:center; }
 
+  /* BLOCO 4 — Aprendizado */
+  .aprendizado-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:760px){ .aprendizado-grid{grid-template-columns:1fr;} }
+
+  /* Funil */
+  .funil-wrap { display:flex; flex-direction:column; gap:10px; margin-top:4px; }
+  .funil-item { display:flex; align-items:center; gap:10px; }
+  .funil-label { font-size:12px; color:var(--muted); width:110px; flex-shrink:0; }
+  .funil-bar-outer { flex:1; background:var(--surface2); border-radius:5px; height:26px; overflow:hidden; }
+  .funil-bar-inner { height:100%; border-radius:5px; display:flex; align-items:center; padding-left:8px; font-size:11px; font-weight:700; color:#fff; transition:width .4s; }
+  .funil-bar-inner.concluido { background:var(--b2b); }
+  .funil-bar-inner.andamento { background:var(--warn); }
+  .funil-bar-inner.nao { background:var(--surface2); color:var(--muted); border:1px solid var(--border); }
+  .funil-count { width:44px; text-align:right; font-size:12px; font-weight:700; color:var(--muted); }
+
+  /* Novos vs Recorrentes */
+  .nr-row { display:flex; gap:16px; margin-top:4px; }
+  .nr-card { flex:1; background:var(--surface2); border-radius:10px; padding:16px; text-align:center; }
+  .nr-num { font-size:36px; font-weight:800; line-height:1; }
+  .nr-num.novo { color:var(--b2c); }
+  .nr-num.rec { color:var(--b2b); }
+  .nr-label { font-size:11px; color:var(--muted); margin-top:4px; }
+  .nr-pct { font-size:11px; font-weight:700; margin-top:2px; }
+
+  /* Taxa de conclusão */
+  .conclusao-list { list-style:none; display:flex; flex-direction:column; gap:9px; }
+  .conclusao-item { display:flex; align-items:center; gap:9px; }
+  .conclusao-bar-wrap { flex:1; background:var(--surface2); border-radius:4px; height:24px; position:relative; overflow:hidden; }
+  .conclusao-bar { height:100%; background:var(--b2b); opacity:.55; border-radius:4px; }
+  .conclusao-name { position:absolute; left:8px; top:50%; transform:translateY(-50%); font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:72%; }
+  .conclusao-taxa { font-size:11px; font-weight:700; color:var(--muted); flex-shrink:0; width:38px; text-align:right; }
+
   .rank-list { list-style:none; display:flex; flex-direction:column; gap:8px; }
   .rank-item { display:flex; align-items:center; gap:9px; }
   .rank-num { width:18px; font-size:10px; font-weight:700; color:var(--muted); text-align:right; flex-shrink:0; }
@@ -188,6 +220,59 @@
       </div>
     </section>
 
+    <!-- BLOCO 4 — Como estão aprendendo -->
+    <section>
+      <div class="bloco-titulo">Como estão aprendendo?</div>
+      <div class="bloco-sub">Progresso dos alunos, fidelidade e taxa de conclusão por curso.</div>
+      <div class="aprendizado-grid">
+
+        <div style="display:flex;flex-direction:column;gap:18px;">
+          <div class="card">
+            <h3>Funil de engajamento</h3>
+            <div class="funil-wrap" id="funil-wrap">
+              <div class="funil-item">
+                <span class="funil-label">Concluído</span>
+                <div class="funil-bar-outer"><div class="funil-bar-inner concluido" id="funil-bar-concluido" style="width:0%"></div></div>
+                <span class="funil-count" id="funil-n-concluido">—</span>
+              </div>
+              <div class="funil-item">
+                <span class="funil-label">Em andamento</span>
+                <div class="funil-bar-outer"><div class="funil-bar-inner andamento" id="funil-bar-andamento" style="width:0%"></div></div>
+                <span class="funil-count" id="funil-n-andamento">—</span>
+              </div>
+              <div class="funil-item">
+                <span class="funil-label">Não iniciou</span>
+                <div class="funil-bar-outer"><div class="funil-bar-inner nao" id="funil-bar-nao" style="width:100%"></div></div>
+                <span class="funil-count" id="funil-n-nao">—</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Novos vs. recorrentes — <span id="nr-ano-label">este ano</span></h3>
+            <div class="nr-row">
+              <div class="nr-card">
+                <div class="nr-num novo" id="nr-novos">—</div>
+                <div class="nr-label">novos clientes</div>
+                <div class="nr-pct" style="color:var(--b2c)" id="nr-pct-novos"></div>
+              </div>
+              <div class="nr-card">
+                <div class="nr-num rec" id="nr-recorrentes">—</div>
+                <div class="nr-label">já eram clientes</div>
+                <div class="nr-pct" style="color:var(--b2b)" id="nr-pct-rec"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Taxa de conclusão por curso — <span id="conclusao-ano-label">este ano</span></h3>
+          <ul class="conclusao-list" id="conclusao-list"></ul>
+        </div>
+
+      </div>
+    </section>
+
     <!-- BLOCO 3 -->
     <section>
       <div class="bloco-titulo">De onde vem nosso dinheiro?</div>
@@ -210,6 +295,47 @@ let trendChart, geoChart;
 let anoSelecionado = new Date().getFullYear();
 
 function fmt(n){ return n?.toLocaleString("pt-BR") ?? "—"; }
+
+function renderFunil(funil){
+  if(!funil || !funil.total) return;
+  const t = funil.total;
+  const pct = n => Math.max(2, Math.round(n / t * 100));
+  document.getElementById("funil-bar-concluido").style.width = pct(funil.concluido) + "%";
+  document.getElementById("funil-bar-andamento").style.width = pct(funil.andamento) + "%";
+  document.getElementById("funil-bar-nao").style.width = pct(funil.nao_iniciado) + "%";
+  document.getElementById("funil-n-concluido").textContent = fmt(funil.concluido);
+  document.getElementById("funil-n-andamento").textContent = fmt(funil.andamento);
+  document.getElementById("funil-n-nao").textContent = fmt(funil.nao_iniciado);
+}
+
+function renderNovosRecorrentes(nr, ano){
+  const anoAtual = new Date().getFullYear();
+  document.getElementById("nr-ano-label").textContent = ano === anoAtual ? "este ano" : ano;
+  document.getElementById("conclusao-ano-label").textContent = ano === anoAtual ? "este ano" : ano;
+  if(!nr) return;
+  document.getElementById("nr-novos").textContent = fmt(nr.novos);
+  document.getElementById("nr-recorrentes").textContent = fmt(nr.recorrentes);
+  document.getElementById("nr-pct-novos").textContent = nr.pct_novos + "% do total";
+  document.getElementById("nr-pct-rec").textContent = nr.pct_recorrentes + "% do total";
+}
+
+function renderConclusao(cursos){
+  const ul = document.getElementById("conclusao-list");
+  if(!cursos?.length){
+    ul.innerHTML = '<li style="color:var(--muted);font-size:12px">Sem dados suficientes</li>';
+    return;
+  }
+  ul.innerHTML = cursos.map(c => {
+    const cor = c.taxa >= 70 ? "var(--b2b)" : c.taxa >= 40 ? "var(--warn)" : "var(--danger)";
+    return `<li class="conclusao-item">
+      <div class="conclusao-bar-wrap">
+        <div class="conclusao-bar" style="width:${c.taxa}%;background:${cor};opacity:.5"></div>
+        <span class="conclusao-name" title="${c.curso}">${c.curso}</span>
+      </div>
+      <span class="conclusao-taxa" style="color:${cor}">${c.taxa}%</span>
+    </li>`;
+  }).join("");
+}
 
 function renderRanking(listId, items, nameKey, countKey, cls=""){
   const ul = document.getElementById(listId);
@@ -365,6 +491,9 @@ async function loadDashboard(){
     renderRanking("rank-clientes", data.top10_clientes, "empresa", "matriculas", "b2b");
     renderTrendChart(data);
     renderGeoChart(data.geo);
+    renderFunil(data.funil);
+    renderNovosRecorrentes(data.novos_recorrentes, anoSelecionado);
+    renderConclusao(data.conclusao_cursos);
 
     if(data.cache_info){
       const ci = data.cache_info;

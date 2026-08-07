@@ -72,6 +72,7 @@ def init_db():
     c.execute("CREATE TABLE IF NOT EXISTS enrollments (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
     c.execute("CREATE TABLE IF NOT EXISTS certificates (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
     c.execute("CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
+    c.execute("CREATE TABLE IF NOT EXISTS progress (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
     c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     conn.close()
@@ -234,12 +235,14 @@ def do_sync(modo="completo"):
             n_enr = sync_endpoint_rapido("enrollment", "enrollments", "Matrículas", paginas=10)
             n_cert = sync_endpoint_rapido("certificate", "certificates", "Certificados", paginas=10)
             n_stu = sync_endpoint_rapido("student", "students", "Alunos", paginas=3, id_field="aluno_id")
-            msg = f"Rápido concluído — {n_enr} matrículas, {n_cert} certificados, {n_stu} alunos verificados."
+            n_prog = sync_endpoint_rapido("progress", "progress", "Progresso", paginas=10, id_field="matricula_id")
+            msg = f"Rápido — {n_enr} matrículas, {n_cert} certificados, {n_stu} alunos, {n_prog} progresso."
         else:
             n_enr = sync_endpoint("enrollment", "enrollments", "Matrículas")
             n_cert = sync_endpoint("certificate", "certificates", "Certificados")
             n_stu = sync_endpoint("student", "students", "Alunos", id_field="aluno_id")
-            msg = f"Completo — {n_enr} matrículas, {n_cert} certificados, {n_stu} alunos."
+            n_prog = sync_endpoint("progress", "progress", "Progresso", id_field="matricula_id")
+            msg = f"Completo — {n_enr} matrículas, {n_cert} certificados, {n_stu} alunos, {n_prog} progresso."
 
         now_str = datetime.now().isoformat()
         _salvar_meta_sync(now_str, modo)
@@ -426,6 +429,91 @@ def compute_vendas(enrollments, ano):
     }
 
 
+def compute_funil(progress_data):
+    """Conta alunos por situação de progresso: Concluído / Em Andamento / Não Iniciado."""
+    counts = {"Concluído": 0, "Em Andamento": 0, "Não Iniciado": 0}
+    for p in progress_data:
+        s = p.get("situacao") or "Não Iniciado"
+        if s in counts:
+            counts[s] += 1
+        else:
+            counts["Não Iniciado"] += 1
+    total = sum(counts.values())
+    return {
+        "concluido": counts["Concluído"],
+        "andamento": counts["Em Andamento"],
+        "nao_iniciado": counts["Não Iniciado"],
+        "total": total,
+    }
+
+
+def compute_novos_recorrentes(enrollments, ano):
+    """Para o ano selecionado: quantos alunos únicos compram pela 1ª vez vs. já eram clientes."""
+    ano_str = str(ano)
+    primeiro_ano = {}
+    for e in enrollments:
+        aid = e.get("aluno_id")
+        ano_e = (e.get("cadastro") or "")[:4]
+        if aid and ano_e.isdigit():
+            a = int(ano_e)
+            if aid not in primeiro_ano or a < primeiro_ano[aid]:
+                primeiro_ano[aid] = a
+
+    alunos_no_ano = set()
+    for e in enrollments:
+        if (e.get("cadastro") or "").startswith(ano_str):
+            aid = e.get("aluno_id")
+            if aid:
+                alunos_no_ano.add(aid)
+
+    novos = sum(1 for aid in alunos_no_ano if primeiro_ano.get(aid) == ano)
+    recorrentes = len(alunos_no_ano) - novos
+    total = len(alunos_no_ano)
+    return {
+        "novos": novos,
+        "recorrentes": recorrentes,
+        "total": total,
+        "pct_novos": round(novos / total * 100, 1) if total else 0,
+        "pct_recorrentes": round(recorrentes / total * 100, 1) if total else 0,
+    }
+
+
+def compute_conclusao_cursos(enrollments, certificates, ano, min_enrolled=5):
+    """Taxa de conclusão por curso para o ano selecionado (alunos com cert / alunos matriculados)."""
+    ano_str = str(ano)
+
+    enrolled = defaultdict(set)
+    for e in enrollments:
+        if (e.get("cadastro") or "").startswith(ano_str):
+            titulo = e.get("titulo_curso") or "Sem nome"
+            aid = e.get("aluno_id")
+            if aid:
+                enrolled[titulo].add(aid)
+
+    certified = defaultdict(set)
+    for c in certificates:
+        titulo = c.get("curso_titulo") or "Sem nome"
+        aid = c.get("aluno_id")
+        if aid:
+            certified[titulo].add(aid)
+
+    result = []
+    for titulo, alunos in enrolled.items():
+        if len(alunos) < min_enrolled:
+            continue
+        cert_count = len(certified.get(titulo, set()) & alunos)
+        taxa = round(cert_count / len(alunos) * 100, 1)
+        result.append({
+            "curso": titulo,
+            "matriculados": len(alunos),
+            "certificados": cert_count,
+            "taxa": taxa,
+        })
+
+    result.sort(key=lambda x: x["matriculados"], reverse=True)
+    return result[:15]
+
+
 def compute_recert_lista(certificates, students_map, emails, canais, empresas):
     """Lista deduplicada de recertificações nos próximos 90 dias, enriquecida com dados do aluno."""
     now = datetime.now()
@@ -498,6 +586,8 @@ def dashboard():
     except (ValueError, TypeError):
         ano = ano_atual
 
+    progress_data = load_table("progress")
+
     data = compute_vendas(enrollments, ano)
     lista = compute_recert_lista(certificates, students_map, emails, canais, empresas)
 
@@ -509,6 +599,9 @@ def dashboard():
 
     data["recert"] = {"r30": r30, "r60": r60, "r90": r90, "total": len(lista)}
     data["geo"] = [{"uf": k, "total": v} for k, v in geo[:15]]
+    data["funil"] = compute_funil(progress_data)
+    data["novos_recorrentes"] = compute_novos_recorrentes(enrollments, ano)
+    data["conclusao_cursos"] = compute_conclusao_cursos(enrollments, certificates, ano)
     data["cache_info"] = {
         "total_matriculas": count_table("enrollments"),
         "total_certificados": count_table("certificates"),
@@ -622,6 +715,6 @@ if __name__ == "__main__":
         print("⚠  Falta a biblioteca openpyxl. Rode: pip install openpyxl")
     print("=" * 50)
     print("Boss Dashboard — http://localhost:5000")
-    print(f"Matrículas: {count_table('enrollments')} | Certificados: {count_table('certificates')} | Alunos: {count_table('students')}")
+    print(f"Matrículas: {count_table('enrollments')} | Certificados: {count_table('certificates')} | Alunos: {count_table('students')} | Progresso: {count_table('progress')}")
     print("=" * 50)
     app.run(debug=True, port=5000)
