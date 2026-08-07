@@ -223,6 +223,10 @@
         <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
           <button id="btn-excel" onclick="baixarExcel()">⬇ Baixar lista em Excel</button>
           <button class="btn-email" id="btn-email" onclick="enviarEmails()">✉ Enviar e-mails (90 dias)</button>
+          <div style="display:flex;gap:6px;align-items:center;width:100%">
+            <input id="input-email-teste" type="email" placeholder="seu@email.com" style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:12px;">
+            <button onclick="testarEmail()" style="background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;cursor:pointer;padding:7px 10px;white-space:nowrap">Testar</button>
+          </div>
           <div class="email-progress-wrap" id="email-progress-wrap" style="width:100%;display:none">
             <div class="email-progress-bar" id="email-progress-bar" style="width:0%"></div>
           </div>
@@ -534,6 +538,32 @@ function _pollEmailStatus(){
       }
     } catch(e){}
   }, 1500);
+}
+
+async function testarEmail(){
+  const email = document.getElementById("input-email-teste").value.trim();
+  if(!email) return;
+  const status = document.getElementById("email-status");
+  status.style.color = "var(--muted)";
+  status.textContent = "Enviando e-mail de teste...";
+  try {
+    const res = await fetch("/api/enviar_recert/teste", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email})
+    });
+    const d = await res.json();
+    if(d.erro){
+      status.style.color = "var(--danger)";
+      status.textContent = "Erro: " + d.erro;
+    } else {
+      status.style.color = "var(--b2b)";
+      status.textContent = `✓ E-mail de teste enviado para ${d.enviado_para}`;
+    }
+  } catch(e) {
+    status.style.color = "var(--danger)";
+    status.textContent = "Erro de conexão.";
+  }
 }
 
 async function enviarEmails(){

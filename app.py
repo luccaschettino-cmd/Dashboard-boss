@@ -719,9 +719,9 @@ def sync_status_route():
     return jsonify(sync_status)
 
 
-EMAIL_REMETENTE = "bosstreinamentos@hotmail.com"
+EMAIL_REMETENTE = os.getenv("EMAIL_REMETENTE", "bosstreinamentos@hotmail.com")
 EMAIL_SENHA = os.getenv("EMAIL_SENHA", "")
-SMTP_HOST = "smtp.office365.com"
+SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 
 email_status = {"running": False, "total": 0, "enviados": 0, "pulados": 0, "erros": [], "msg": "", "concluido": False}
@@ -760,8 +760,8 @@ def _corpo_email(nome, curso, dias, empresa=None):
 <html><body style="font-family:Arial,sans-serif;background:#f4f4f4;padding:20px">
 <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
   <div style="background:#1a1d27;padding:28px 32px;text-align:center">
-    <img src="https://bosstreinamentos.com/wp-content/uploads/2020/05/070520201588870032logoboss.jpg"
-         alt="Boss Treinamentos" style="height:60px;object-fit:contain">
+    <span style="color:#f5a623;font-weight:900;font-size:28px;letter-spacing:2px">BOSS</span><br>
+    <span style="color:#888;font-size:12px;letter-spacing:1px">CONSULTORIA E TREINAMENTOS</span>
   </div>
   <div style="padding:32px">
     <h2 style="color:#1a1d27;margin-bottom:8px">Olá, {saudacao}!</h2>
@@ -847,6 +847,44 @@ def _do_envio(lista, faixa_filtro):
         conn.close()
         email_status["running"] = False
         email_status["concluido"] = True
+
+
+@app.route("/api/enviar_recert/teste", methods=["POST"])
+def enviar_recert_teste():
+    """Envia um e-mail de exemplo para o endereço informado — não registra na tabela de controle."""
+    if not EMAIL_SENHA:
+        return jsonify({"erro": "EMAIL_SENHA não configurada no .env"}), 500
+
+    email_dest = (request.json or {}).get("email", "").strip()
+    if not email_dest:
+        return jsonify({"erro": "Informe o campo 'email' no body da requisição"}), 400
+
+    try:
+        smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+        smtp.starttls()
+        smtp.login(EMAIL_REMETENTE, EMAIL_SENHA)
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "[TESTE] Certificado vencendo em 15 dias — NR-35 Trabalho em Altura"
+        msg["From"] = f"Boss Treinamentos <{EMAIL_REMETENTE}>"
+        msg["To"] = email_dest
+
+        corpo = _corpo_email(
+            nome="Fulano da Silva",
+            curso="NR-35 - Trabalho em Altura 2025",
+            dias=15,
+            empresa="Empresa Exemplo Ltda"
+        )
+        msg.attach(MIMEText(corpo, "html", "utf-8"))
+        smtp.sendmail(EMAIL_REMETENTE, email_dest, msg.as_string())
+        smtp.quit()
+
+        return jsonify({"ok": True, "enviado_para": email_dest})
+    except smtplib.SMTPAuthenticationError:
+        return jsonify({"erro": "Falha de autenticação — verifique EMAIL_SENHA no .env"}), 401
+    except Exception as e:
+        app.logger.exception("Erro no envio de teste")
+        return jsonify({"erro": f"{type(e).__name__}: {e}"}), 500
 
 
 @app.route("/api/enviar_recert", methods=["POST"])
