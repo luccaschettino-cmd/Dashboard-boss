@@ -92,6 +92,16 @@
   #btn-excel { background:var(--accent); color:#000; border:none; border-radius:10px; padding:16px 28px; font-weight:800; font-size:15px; cursor:pointer; white-space:nowrap; display:flex; align-items:center; gap:10px; }
   #btn-excel:hover { filter:brightness(1.05); }
   #btn-excel:disabled { opacity:.5; cursor:wait; }
+  .btn-email { background:transparent; color:var(--b2c); border:1.5px solid var(--b2c); border-radius:10px; padding:12px 22px; font-weight:700; font-size:13px; cursor:pointer; white-space:nowrap; display:flex; align-items:center; gap:8px; transition:all .15s; }
+  .btn-email:hover { background:var(--b2c); color:#fff; }
+  .btn-email:disabled { opacity:.45; cursor:wait; }
+  #email-status { font-size:12px; color:var(--muted); margin-top:8px; text-align:center; min-height:16px; }
+  .email-stats-bar { display:flex; gap:16px; flex-wrap:wrap; margin-top:16px; padding-top:16px; border-top:1px solid var(--border); }
+  .email-stat { flex:1; min-width:80px; text-align:center; }
+  .email-stat-num { font-size:22px; font-weight:800; color:var(--b2c); line-height:1; }
+  .email-stat-label { font-size:11px; color:var(--muted); margin-top:3px; }
+  .email-progress-wrap { background:var(--surface2); border-radius:4px; height:6px; overflow:hidden; margin-top:8px; }
+  .email-progress-bar { height:100%; background:var(--b2c); border-radius:4px; transition:width .3s; }
 
   /* BLOCO 3 */
   .charts-grid { display:grid; grid-template-columns:1.4fr 1fr; gap:18px; }
@@ -210,7 +220,29 @@
             <div class="faixa p"><b id="fx-90">—</b>em 61–90 dias</div>
           </div>
         </div>
-        <button id="btn-excel" onclick="baixarExcel()">⬇ Baixar lista em Excel</button>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
+          <button id="btn-excel" onclick="baixarExcel()">⬇ Baixar lista em Excel</button>
+          <button class="btn-email" id="btn-email" onclick="enviarEmails()">✉ Enviar e-mails (90 dias)</button>
+          <div class="email-progress-wrap" id="email-progress-wrap" style="width:100%;display:none">
+            <div class="email-progress-bar" id="email-progress-bar" style="width:0%"></div>
+          </div>
+          <div id="email-status"></div>
+        </div>
+      </div>
+
+      <div class="email-stats-bar" id="email-stats-bar" style="display:none">
+        <div class="email-stat">
+          <div class="email-stat-num" id="estat-alunos">—</div>
+          <div class="email-stat-label">alunos notificados</div>
+        </div>
+        <div class="email-stat">
+          <div class="email-stat-num" id="estat-total">—</div>
+          <div class="email-stat-label">e-mails enviados</div>
+        </div>
+        <div class="email-stat" style="border-left:1px solid var(--border);padding-left:16px;">
+          <div class="email-stat-num" style="font-size:14px;color:var(--muted)" id="estat-ultimo">—</div>
+          <div class="email-stat-label">último envio</div>
+        </div>
       </div>
     </section>
 
@@ -437,6 +469,7 @@ async function loadDashboard(){
     renderTrendChart(data);
     renderGeoChart(data.geo);
     renderNovosRecorrentes(data.novos_recorrentes, anoSelecionado);
+    carregarEmailStats();
 
     if(data.cache_info){
       const ci = data.cache_info;
@@ -460,6 +493,77 @@ async function loadDashboard(){
     document.getElementById("content").style.display="none";
     document.querySelector("#empty-state h2").textContent="Erro ao carregar dados";
     document.querySelector("#empty-state p").textContent="Verifique a conexão ou tente sincronizar novamente.";
+  }
+}
+
+let emailPollTimer = null;
+
+async function carregarEmailStats(){
+  try {
+    const r = await fetch("/api/email/stats");
+    const d = await r.json();
+    if(!d.total_envios) return;
+    document.getElementById("email-stats-bar").style.display = "flex";
+    document.getElementById("estat-alunos").textContent = fmt(d.alunos_unicos);
+    document.getElementById("estat-total").textContent = fmt(d.total_envios);
+    document.getElementById("estat-ultimo").textContent = d.ultimo_envio || "—";
+  } catch(e){}
+}
+
+function _pollEmailStatus(){
+  emailPollTimer = setInterval(async () => {
+    try {
+      const r = await fetch("/api/email/status");
+      const d = await r.json();
+      const status = document.getElementById("email-status");
+      const bar = document.getElementById("email-progress-bar");
+      const pct = d.total > 0 ? Math.round((d.enviados + d.pulados) / d.total * 100) : 0;
+      bar.style.width = pct + "%";
+      status.textContent = d.msg;
+      if(!d.running){
+        clearInterval(emailPollTimer);
+        emailPollTimer = null;
+        document.getElementById("email-progress-wrap").style.display = "none";
+        const btn = document.getElementById("btn-email");
+        btn.disabled = false;
+        btn.innerHTML = "✉ Enviar e-mails (90 dias)";
+        if(d.concluido){
+          status.style.color = d.erros?.length ? "var(--warn)" : "var(--b2b)";
+          carregarEmailStats();
+        }
+      }
+    } catch(e){}
+  }, 1500);
+}
+
+async function enviarEmails(){
+  const btn = document.getElementById("btn-email");
+  const status = document.getElementById("email-status");
+  if(!confirm("Enviar e-mails para todos os alunos com certificado vencendo em até 90 dias?\n\nQuem já recebeu nos últimos 25 dias será pulado automaticamente.")) return;
+  btn.disabled = true;
+  btn.innerHTML = "Enviando...";
+  status.style.color = "var(--muted)";
+  status.textContent = "Iniciando...";
+  document.getElementById("email-progress-wrap").style.display = "block";
+  document.getElementById("email-progress-bar").style.width = "0%";
+  try {
+    const res = await fetch("/api/enviar_recert", { method:"POST", headers:{"Content-Type":"application/json"}, body:"{}" });
+    const d = await res.json();
+    if(d.erro){
+      status.style.color = "var(--danger)";
+      status.textContent = "Erro: " + d.erro;
+      btn.disabled = false;
+      btn.innerHTML = "✉ Enviar e-mails (90 dias)";
+      document.getElementById("email-progress-wrap").style.display = "none";
+      return;
+    }
+    _pollEmailStatus();
+  } catch(e) {
+    status.style.color = "var(--danger)";
+    status.textContent = "Erro de conexão.";
+    btn.disabled = false;
+    btn.innerHTML = "✉ Enviar e-mails (90 dias)";
+    document.getElementById("email-progress-wrap").style.display = "none";
   }
 }
 

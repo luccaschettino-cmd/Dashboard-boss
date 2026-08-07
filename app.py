@@ -4,6 +4,9 @@ import os
 import sqlite3
 import json
 import io
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from collections import defaultdict
@@ -74,6 +77,14 @@ def init_db():
     c.execute("CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
     c.execute("CREATE TABLE IF NOT EXISTS progress (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
     c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("""CREATE TABLE IF NOT EXISTS emails_enviados (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        aluno_id INTEGER NOT NULL,
+        curso_id INTEGER NOT NULL,
+        faixa INTEGER NOT NULL,
+        data_envio TEXT NOT NULL
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_emails_aluno_curso ON emails_enviados(aluno_id, curso_id, faixa)")
     conn.commit()
     conn.close()
 
@@ -706,6 +717,194 @@ def sync():
 @app.route("/api/sync/status")
 def sync_status_route():
     return jsonify(sync_status)
+
+
+EMAIL_REMETENTE = "bosstreinamentos@hotmail.com"
+EMAIL_SENHA = os.getenv("EMAIL_SENHA", "")
+SMTP_HOST = "smtp.office365.com"
+SMTP_PORT = 587
+
+email_status = {"running": False, "total": 0, "enviados": 0, "pulados": 0, "erros": [], "msg": "", "concluido": False}
+
+
+def _faixa_label(dias):
+    if dias <= 30:
+        return 30
+    if dias <= 60:
+        return 60
+    return 90
+
+
+def _ja_enviou(conn, aluno_id, curso_id, faixa):
+    limite = (datetime.now() - timedelta(days=25)).isoformat()
+    row = conn.execute(
+        "SELECT id FROM emails_enviados WHERE aluno_id=? AND curso_id=? AND faixa=? AND data_envio>?",
+        (aluno_id, curso_id, faixa, limite)
+    ).fetchone()
+    return row is not None
+
+
+def _registrar_envio(conn, aluno_id, curso_id, faixa):
+    conn.execute(
+        "INSERT INTO emails_enviados (aluno_id, curso_id, faixa, data_envio) VALUES (?,?,?,?)",
+        (aluno_id, curso_id, faixa, datetime.now().isoformat())
+    )
+    conn.commit()
+
+
+def _corpo_email(nome, curso, dias, empresa=None):
+    urgencia = "em breve" if dias > 30 else f"em apenas {dias} dias"
+    saudacao = nome.split()[0].capitalize() if nome else "Aluno"
+    rodape_empresa = f"<p style='color:#888;font-size:13px'>Empresa: <b>{empresa}</b></p>" if empresa else ""
+    return f"""
+<html><body style="font-family:Arial,sans-serif;background:#f4f4f4;padding:20px">
+<div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#1a1d27;padding:28px 32px;text-align:center">
+    <img src="https://bosstreinamentos.com/wp-content/uploads/2020/05/070520201588870032logoboss.jpg"
+         alt="Boss Treinamentos" style="height:60px;object-fit:contain">
+  </div>
+  <div style="padding:32px">
+    <h2 style="color:#1a1d27;margin-bottom:8px">Olá, {saudacao}!</h2>
+    <p style="color:#444;line-height:1.6">
+      Seu certificado do curso <strong>{curso}</strong> vence <strong>{urgencia}</strong>.
+    </p>
+    <p style="color:#444;line-height:1.6;margin-top:12px">
+      Para manter sua conformidade legal, é necessário realizar a <strong>reciclagem</strong>
+      antes do vencimento. A Boss Treinamentos já tem turmas disponíveis — entre em contato
+      e garanta sua vaga com antecedência.
+    </p>
+    <div style="text-align:center;margin:28px 0">
+      <a href="https://bosstreinamentos.com"
+         style="background:#f5a623;color:#000;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:700;font-size:15px">
+        Ver cursos disponíveis
+      </a>
+    </div>
+    {rodape_empresa}
+    <hr style="border:none;border-top:1px solid #eee;margin:24px 0">
+    <p style="color:#aaa;font-size:12px;text-align:center">
+      Boss Consultoria e Treinamentos · <a href="https://bosstreinamentos.com" style="color:#f5a623">bosstreinamentos.com</a><br>
+      Para cancelar o recebimento destes avisos, entre em contato pelo site.
+    </p>
+  </div>
+</div>
+</body></html>"""
+
+
+def _do_envio(lista, faixa_filtro):
+    global email_status
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+        smtp.starttls()
+        smtp.login(EMAIL_REMETENTE, EMAIL_SENHA)
+
+        emails_map = mapa_email()
+
+        for item in lista:
+            dias = item.get("dias", 999)
+            if dias > 90:
+                continue
+
+            faixa = _faixa_label(dias)
+            if faixa_filtro and faixa != faixa_filtro:
+                continue
+
+            aluno_id = item.get("aluno_id")
+            curso_id = item.get("curso_id")
+            email_dest = item.get("email") or emails_map.get(aluno_id)
+
+            if not email_dest or not aluno_id or not curso_id:
+                email_status["pulados"] += 1
+                continue
+
+            if _ja_enviou(conn, aluno_id, curso_id, faixa):
+                email_status["pulados"] += 1
+                continue
+
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = f"Certificado vencendo em {dias} dias — {item.get('curso', '')}"
+                msg["From"] = f"Boss Treinamentos <{EMAIL_REMETENTE}>"
+                msg["To"] = email_dest
+                msg.attach(MIMEText(_corpo_email(item.get("aluno", ""), item.get("curso", ""), dias, item.get("empresa")), "html", "utf-8"))
+                smtp.sendmail(EMAIL_REMETENTE, email_dest, msg.as_string())
+                _registrar_envio(conn, aluno_id, curso_id, faixa)
+                email_status["enviados"] += 1
+                email_status["msg"] = f"{email_status['enviados']} de {email_status['total']} enviados"
+            except Exception as e:
+                email_status["erros"].append(f"{email_dest}: {type(e).__name__}")
+                app.logger.exception("Erro ao enviar e-mail para %s", email_dest)
+
+        smtp.quit()
+        email_status["msg"] = f"Concluído — {email_status['enviados']} enviados, {email_status['pulados']} pulados"
+    except smtplib.SMTPAuthenticationError:
+        email_status["msg"] = "Erro: falha de autenticação — verifique EMAIL_SENHA no .env"
+        app.logger.error("SMTPAuthenticationError ao enviar e-mails")
+    except Exception as e:
+        email_status["msg"] = f"Erro de conexão SMTP: {type(e).__name__}"
+        app.logger.exception("Erro SMTP geral")
+    finally:
+        conn.close()
+        email_status["running"] = False
+        email_status["concluido"] = True
+
+
+@app.route("/api/enviar_recert", methods=["POST"])
+def enviar_recert():
+    global email_status
+    if email_status["running"]:
+        return jsonify({"erro": "Envio já em andamento"}), 409
+    if not EMAIL_SENHA:
+        return jsonify({"erro": "EMAIL_SENHA não configurada no .env"}), 500
+
+    faixa_filtro = None
+    if request.json and request.json.get("faixa"):
+        faixa_filtro = int(request.json["faixa"])
+
+    certificates = load_table("certificates")
+    students_map = mapa_student()
+    emails_map = mapa_email()
+    lista = compute_recert_lista(certificates, students_map, emails_map, mapa_canal(), mapa_empresa())
+    candidatos = [x for x in lista if x.get("dias", 999) <= 90]
+
+    email_status = {
+        "running": True,
+        "total": len(candidatos),
+        "enviados": 0,
+        "pulados": 0,
+        "erros": [],
+        "msg": f"Iniciando envio para {len(candidatos)} candidatos...",
+        "concluido": False,
+    }
+
+    t = threading.Thread(target=_do_envio, args=(candidatos, faixa_filtro), daemon=True)
+    t.start()
+    return jsonify({"ok": True, "total": len(candidatos)})
+
+
+@app.route("/api/email/status")
+def email_status_route():
+    return jsonify(email_status)
+
+
+@app.route("/api/email/stats")
+def email_stats():
+    """Estatísticas gerais de e-mails enviados para exibir no dashboard."""
+    conn = sqlite3.connect(DB_PATH)
+    total_envios = conn.execute("SELECT COUNT(*) FROM emails_enviados").fetchone()[0]
+    alunos_unicos = conn.execute("SELECT COUNT(DISTINCT aluno_id) FROM emails_enviados").fetchone()[0]
+    por_faixa = {
+        str(r[0]): r[1]
+        for r in conn.execute("SELECT faixa, COUNT(*) FROM emails_enviados GROUP BY faixa").fetchall()
+    }
+    ultimo = conn.execute("SELECT data_envio FROM emails_enviados ORDER BY data_envio DESC LIMIT 1").fetchone()
+    conn.close()
+    return jsonify({
+        "total_envios": total_envios,
+        "alunos_unicos": alunos_unicos,
+        "por_faixa": por_faixa,
+        "ultimo_envio": ultimo[0][:10] if ultimo else None,
+    })
 
 
 if __name__ == "__main__":
