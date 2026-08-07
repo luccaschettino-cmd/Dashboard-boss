@@ -431,10 +431,24 @@ function renderGeoChart(geo){
 
 async function loadDashboard(){
   try {
+    // Verifica se sync está rodando antes de carregar o dashboard
+    const syncRes = await fetch("/api/sync/status");
+    const syncData = await syncRes.json();
+    if(syncData.running){
+      document.getElementById("empty-state").style.display="block";
+      document.getElementById("content").style.display="none";
+      document.querySelector("#empty-state h2").textContent="Sincronizando dados...";
+      document.querySelector("#empty-state p").textContent=syncData.progress || "Aguarde, buscando dados da plataforma.";
+      setTimeout(loadDashboard, 3000);
+      return;
+    }
+
     const res = await fetch(`/api/dashboard?ano=${anoSelecionado}`);
     if(res.status===503){
       document.getElementById("empty-state").style.display="block";
       document.getElementById("content").style.display="none";
+      document.querySelector("#empty-state h2").textContent="Nenhum dado carregado";
+      document.querySelector("#empty-state p").textContent="Clique em ⟳ Atualizar dados no topo.";
       return;
     }
     const data = await res.json();
