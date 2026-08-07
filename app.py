@@ -123,12 +123,17 @@ def load_table(table):
     return _table_cache[table]
 
 
-def sync_endpoint(endpoint, table, label, id_field=None):
-    """Busca endpoint paginado e salva tudo no SQLite sem filtro de data."""
+def sync_endpoint(endpoint, table, label, id_field=None, data_minima="2023-01-01"):
+    """Busca endpoint paginado e salva no SQLite registros a partir de data_minima."""
     LIMIT = 200
+    # Campos de data usados por cada endpoint para filtrar
+    CAMPOS_DATA = {"enrollment": "cadastro", "certificate": "concluido", "progress": None, "student": None}
+    campo_data = CAMPOS_DATA.get(endpoint)
+
     offset = 0
     total_salvos = 0
     total_lidos = 0
+    parou_por_data = False
     conn = sqlite3.connect(DB_PATH)
     try:
         c = conn.cursor()
@@ -150,14 +155,21 @@ def sync_endpoint(endpoint, table, label, id_field=None):
                 now_str = datetime.now().isoformat()
                 batch = []
                 for i, e in enumerate(items):
+                    # Filtra por data mínima quando o endpoint tem campo de data
+                    if campo_data and data_minima:
+                        val = (e.get(campo_data) or "")[:10]
+                        if val and val < data_minima:
+                            parou_por_data = True
+                            continue
                     if id_field:
                         row_id = e.get(id_field) or f"o{offset}_{i}"
                     else:
                         row_id = e.get("id") or e.get("matricula_id") or e.get("aluno_id") or f"o{offset}_{i}"
                     batch.append((row_id, json.dumps(e), now_str))
-                c.executemany(f"INSERT OR REPLACE INTO {table} (id, data, synced_at) VALUES (?,?,?)", batch)
-                conn.commit()
-                total_salvos += len(items)
+                if batch:
+                    c.executemany(f"INSERT OR REPLACE INTO {table} (id, data, synced_at) VALUES (?,?,?)", batch)
+                    conn.commit()
+                total_salvos += len(batch)
                 sync_status["progress"] = f"{label}: {total_lidos} lidos, {total_salvos} salvos"
                 sync_status["done"] = total_salvos
                 if len(items) < LIMIT:
