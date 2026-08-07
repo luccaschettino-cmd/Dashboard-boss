@@ -525,6 +525,18 @@ def compute_conclusao_cursos(enrollments, certificates, ano, min_enrolled=5):
     return result[:15]
 
 
+# Cursos excluídos da fila de recertificação (não aparecem nos e-mails nem no contador)
+CURSOS_EXCLUIDOS_RECERT = [
+    "NR-35",
+    "NR 35",
+]
+
+
+def _curso_excluido(titulo):
+    titulo_upper = (titulo or "").upper()
+    return any(excl.upper() in titulo_upper for excl in CURSOS_EXCLUIDOS_RECERT)
+
+
 def compute_recert_lista(certificates, students_map, emails, canais, empresas):
     """Lista deduplicada de recertificações nos próximos 90 dias, enriquecida com dados do aluno."""
     now = datetime.now()
@@ -534,6 +546,8 @@ def compute_recert_lista(certificates, students_map, emails, canais, empresas):
         curso = c.get("curso_id")
         concl = (c.get("concluido") or "")[:10]
         if aluno is None or curso is None or not concl:
+            continue
+        if _curso_excluido(c.get("curso_titulo", "")):
             continue
         chave = (aluno, curso)
         atual = ultimo.get(chave)
@@ -826,8 +840,9 @@ def _do_envio(lista, faixa_filtro):
                 msg["Subject"] = f"Certificado vencendo em {dias} dias — {item.get('curso', '')}"
                 msg["From"] = f"Boss Treinamentos <{EMAIL_REMETENTE}>"
                 msg["To"] = email_dest
+                msg["Cc"] = "bosstreinamentos@hotmail.com"
                 msg.attach(MIMEText(_corpo_email(item.get("aluno", ""), item.get("curso", ""), dias, item.get("empresa")), "html", "utf-8"))
-                smtp.sendmail(EMAIL_REMETENTE, email_dest, msg.as_string())
+                smtp.sendmail(EMAIL_REMETENTE, [email_dest, "bosstreinamentos@hotmail.com"], msg.as_string())
                 _registrar_envio(conn, aluno_id, curso_id, faixa)
                 email_status["enviados"] += 1
                 email_status["msg"] = f"{email_status['enviados']} de {email_status['total']} enviados"
