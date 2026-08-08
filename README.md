@@ -11,7 +11,7 @@ Dashboard interno da **Boss Consultoria e Treinamentos** para acompanhamento de 
 | Backend | Python 3.14 + Flask |
 | Banco local | SQLite (modo WAL) |
 | Frontend | HTML/CSS/JS vanilla + Chart.js |
-| E-mail | SMTP Outlook / Hotmail |
+| E-mail | SMTP Gmail (`smtp.gmail.com:587`) com senha de app |
 | Exportação | openpyxl (Excel) |
 | Deploy | Gunicorn |
 
@@ -39,11 +39,12 @@ boss_dashboard/
 ## Variáveis de ambiente (`.env`)
 
 ```env
-EAD_TOKEN=seu_token_aqui       # Token da API da plataforma EAD
-EMAIL_SENHA=sua_senha_aqui     # Senha do bosstreinamentos@hotmail.com
+EAD_TOKEN=seu_token_aqui           # Token da API da plataforma EAD
+EMAIL_REMETENTE=seu@gmail.com      # Conta Gmail usada para envio
+EMAIL_SENHA=sua_senha_app_aqui     # Senha de aplicativo do Gmail (não a senha normal)
 ```
 
-> **Hotmail/Outlook:** se autenticação falhar, ative verificação em duas etapas em account.microsoft.com e gere uma **senha de aplicativo** para usar no lugar da senha normal.
+> **Gmail:** acesse myaccount.google.com → Segurança → Verificação em duas etapas → Senhas de app. Gere uma senha para "Outro (nome personalizado)" e use no lugar da senha normal. A conta `bosstreinamentos@hotmail.com` recebe cópia (CC) de todos os envios.
 
 ---
 
@@ -127,7 +128,11 @@ Calculada como `certificate.concluido + validade legal da norma`:
 
 > ⚠️ **Nunca usar o campo `expira` do enrollment para calcular recertificação.** Ele representa o prazo de acesso à plataforma EAD (definido comercialmente), não a validade legal do certificado.
 
-Deduplicação: por `(aluno_id, curso_id)`, mantendo o certificado com `concluido` mais recente.
+**Deduplicação cross-ano:** a função `norma_base(titulo)` normaliza o nome do curso removendo o ano e sufixos de duração (ex: "2025", "- 3 anos", "16h"). A deduplicação usa a chave `(aluno_id, norma_base(titulo))`, garantindo que um aluno que refez o NR-33 em 2026 não apareça na fila caso o certificado de 2026 ainda esteja válido — mesmo sendo um `curso_id` diferente.
+
+**Exclusões:** NR-35 (Trabalho em Altura) está excluído da fila de recertificação por não ter periodicidade legal definida.
+
+**Filtro de data:** o sync completo e rápido busca registros a partir de `2023-01-01` para evitar processamento de dados muito antigos.
 
 ### Filtro de ano
 - Ano atual → KPIs mensais + tendência mensal
@@ -162,8 +167,9 @@ Rota: `POST /api/enviar_recert`
 1. Monta fila de recertificação (certificados vencendo em até 90 dias)
 2. Para cada aluno, verifica tabela `emails_enviados`:
    - Se já recebeu na mesma **faixa** nos últimos 25 dias → pula
-3. Envia via SMTP Outlook e registra na tabela
+3. Envia via SMTP Gmail, com CC automático para `bosstreinamentos@hotmail.com`, e registra na tabela
 4. Roda em thread background com progresso em tempo real
+5. Aceita parâmetro `limite` no body JSON para enviar em lotes (ex: `{"limite": 100}`)
 
 **Faixas de envio** (cada aluno recebe no máximo 1 e-mail por faixa por ciclo):
 - Faixa 90: vence em 61–90 dias
@@ -176,7 +182,8 @@ Rota: `POST /api/enviar_recert`
 |------|-----------|
 | `POST /api/enviar_recert` | Inicia envio em background |
 | `GET /api/email/status` | Progresso atual (polling) |
-| `GET /api/email/stats` | Estatísticas acumuladas (alunos notificados, total de envios) |
+| `GET /api/email/stats` | Status da fila atual: já notificados / pendentes / total na fila / último envio |
+| `POST /api/enviar_recert/teste` | Envia e-mail de teste para um endereço específico (`{"email": "dest@exemplo.com"}`) |
 
 ---
 
@@ -191,7 +198,8 @@ Rota: `POST /api/enviar_recert`
 | `/api/exportar` | GET | Download da lista de recertificação em Excel |
 | `/api/enviar_recert` | POST | Inicia disparo de e-mails |
 | `/api/email/status` | GET | Progresso do envio em andamento |
-| `/api/email/stats` | GET | Estatísticas de e-mails enviados |
+| `/api/email/stats` | GET | Status da fila atual de recertificação vs e-mails já enviados |
+| `/api/enviar_recert/teste` | POST | Envia e-mail de teste para endereço específico |
 
 ---
 
