@@ -549,19 +549,46 @@ def _curso_excluido(titulo):
     return any(excl.upper() in titulo_upper for excl in CURSOS_EXCLUIDOS_RECERT)
 
 
+def norma_base(titulo):
+    """Extrai a norma base do título removendo o ano e lixo extra.
+
+    'NR-33 - Espaço Confinado 2025' → 'NR-33 - Espaço Confinado'
+    'NR 20 - Líquidos - Intermediário Classe III - 2026' → 'NR-20 - Líquidos - Intermediário Classe III'
+    'Direção Defensiva 2024 - 3 anos - 16h' → 'Direção Defensiva'
+    'Primeiros Socorros 2025' → 'Primeiros Socorros'
+    """
+    if not titulo:
+        return ""
+    t = titulo.strip()
+    # Remove sufixos de carga horária e validade: "- 3 anos - 16h", "- 40h", etc.
+    t = re.sub(r'\s*-\s*\d+\s*(anos?|h|horas?)\b.*$', '', t, flags=re.IGNORECASE)
+    # Remove o ano (4 dígitos isolados)
+    t = re.sub(r'\b(19|20)\d{2}\b', '', t)
+    # Normaliza "NR 33" → "NR-33"
+    t = re.sub(r'\bNR\s+(\d+)\b', r'NR-\1', t, flags=re.IGNORECASE)
+    # Remove traços e espaços sobrando no final
+    t = re.sub(r'[\s\-]+$', '', t)
+    t = re.sub(r'\s{2,}', ' ', t)
+    return t.strip()
+
+
 def compute_recert_lista(certificates, students_map, emails, canais, empresas):
-    """Lista deduplicada de recertificações nos próximos 90 dias, enriquecida com dados do aluno."""
+    """Lista deduplicada de recertificações nos próximos 90 dias, enriquecida com dados do aluno.
+
+    Deduplicação por (aluno_id, norma_base) — agrupa NR-33 2025 e NR-33 2026 como o mesmo curso.
+    """
     now = datetime.now()
     ultimo = {}
     for c in certificates:
         aluno = c.get("aluno_id")
-        curso = c.get("curso_id")
+        titulo = c.get("curso_titulo") or ""
         concl = (c.get("concluido") or "")[:10]
-        if aluno is None or curso is None or not concl:
+        if aluno is None or not concl:
             continue
-        if _curso_excluido(c.get("curso_titulo", "")):
+        if _curso_excluido(titulo):
             continue
-        chave = (aluno, curso)
+        # Chave por norma base, não por curso_id — agrupa versões anuais do mesmo curso
+        chave = (aluno, norma_base(titulo))
         atual = ultimo.get(chave)
         if atual is None or concl > (atual.get("concluido") or "")[:10]:
             ultimo[chave] = c
@@ -578,6 +605,8 @@ def compute_recert_lista(certificates, students_map, emails, canais, empresas):
                 aid = c.get("aluno_id")
                 s = students_map.get(aid, {})
                 lista.append({
+                    "aluno_id": aid,
+                    "curso_id": c.get("curso_id"),
                     "aluno": c.get("aluno_nome", ""),
                     "email": emails.get(aid, ""),
                     "telefone": s.get("telefone", ""),
@@ -957,20 +986,39 @@ def email_status_route():
 
 @app.route("/api/email/stats")
 def email_stats():
-    """Estatísticas gerais de e-mails enviados para exibir no dashboard."""
+    """Cruza a fila atual de recertificação com o histórico de envios."""
+    # Monta fila atual (próximos 90 dias)
+    certificates = load_table("certificates")
+    students_map = mapa_student()
+    emails_map = mapa_email()
+    lista = compute_recert_lista(certificates, students_map, emails_map, mapa_canal(), mapa_empresa())
+    total_fila = len(lista)
+
+    if total_fila == 0:
+        return jsonify({"total_fila": 0, "ja_notificados": 0, "pendentes": 0, "ultimo_envio": None})
+
+    # Verifica quais da fila já foram notificados na faixa correta
     conn = sqlite3.connect(DB_PATH)
-    total_envios = conn.execute("SELECT COUNT(*) FROM emails_enviados").fetchone()[0]
-    alunos_unicos = conn.execute("SELECT COUNT(DISTINCT aluno_id) FROM emails_enviados").fetchone()[0]
-    por_faixa = {
-        str(r[0]): r[1]
-        for r in conn.execute("SELECT faixa, COUNT(*) FROM emails_enviados GROUP BY faixa").fetchall()
-    }
-    ultimo = conn.execute("SELECT data_envio FROM emails_enviados ORDER BY data_envio DESC LIMIT 1").fetchone()
+    limite = (datetime.now() - timedelta(days=25)).isoformat()
+    ja_notificados = 0
+    for item in lista:
+        faixa = _faixa_label(item["dias"])
+        row = conn.execute(
+            "SELECT id FROM emails_enviados WHERE aluno_id=? AND curso_id=? AND faixa=? AND data_envio>?",
+            (item.get("aluno_id"), item.get("curso_id"), faixa, limite)
+        ).fetchone()
+        if row:
+            ja_notificados += 1
+
+    ultimo = conn.execute(
+        "SELECT data_envio FROM emails_enviados ORDER BY data_envio DESC LIMIT 1"
+    ).fetchone()
     conn.close()
+
     return jsonify({
-        "total_envios": total_envios,
-        "alunos_unicos": alunos_unicos,
-        "por_faixa": por_faixa,
+        "total_fila": total_fila,
+        "ja_notificados": ja_notificados,
+        "pendentes": total_fila - ja_notificados,
         "ultimo_envio": ultimo[0][:10] if ultimo else None,
     })
 
