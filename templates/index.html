@@ -291,6 +291,21 @@
       </div>
     </section>
 
+    <!-- BLOCO 4 — CERTIFICADOS DE COLABORADORES -->
+    <section id="secao-colaboradores">
+      <div class="bloco-titulo">Certificados de colaboradores</div>
+      <div class="bloco-sub">Cole CPFs ou e-mails (um por linha) para encontrar os certificados e baixar em ZIP.</div>
+
+      <div class="card" style="max-width:680px;">
+        <label style="font-size:13px;font-weight:600;color:var(--muted);display:block;margin-bottom:6px;">CPFs / E-mails</label>
+        <textarea id="colab-input" rows="5" placeholder="joao@empresa.com&#10;123.456.789-00&#10;maria@empresa.com" style="width:100%;box-sizing:border-box;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:14px;font-family:inherit;resize:vertical;"></textarea>
+        <button onclick="buscarColaboradores()" style="margin-top:10px;padding:10px 22px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;">Buscar</button>
+        <span id="colab-msg" style="margin-left:12px;font-size:13px;color:var(--muted);"></span>
+      </div>
+
+      <div id="colab-resultados" style="display:none;margin-top:20px;"></div>
+    </section>
+
   </div>
 </main>
 
@@ -662,6 +677,106 @@ async function startSync(modo="rapido"){
 }
 
 loadDashboard();
+
+// ── COLABORADORES ────────────────────────────────────────────────
+async function buscarColaboradores() {
+  const raw = document.getElementById("colab-input").value;
+  const termos = raw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  if (!termos.length) return;
+  const msg = document.getElementById("colab-msg");
+  const res_div = document.getElementById("colab-resultados");
+  msg.textContent = "Buscando...";
+  res_div.style.display = "none";
+  try {
+    const res = await fetch("/api/colaboradores/buscar", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({termos})
+    });
+    const data = await res.json();
+    if (data.erro) { msg.textContent = "Erro: " + data.erro; return; }
+    const alunos = data.alunos || [];
+    if (!alunos.length) { msg.textContent = "Nenhum aluno encontrado."; return; }
+    msg.textContent = `${alunos.length} aluno(s) encontrado(s).`;
+    renderColaboradores(alunos);
+    res_div.style.display = "block";
+  } catch(e) { msg.textContent = "Erro na busca."; }
+}
+
+function renderColaboradores(alunos) {
+  const div = document.getElementById("colab-resultados");
+  let html = `<div style="display:flex;flex-direction:column;gap:14px;">`;
+  alunos.forEach((a, ai) => {
+    html += `<div class="card" style="padding:16px 20px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+        <input type="checkbox" id="colab-check-all-${ai}" onchange="toggleAluno(${ai},this.checked)" style="width:16px;height:16px;accent-color:var(--accent);">
+        <strong style="font-size:15px;">${a.nome}</strong>
+        <span style="font-size:12px;color:var(--muted);">${a.email || ''} ${a.cpf ? '· '+a.cpf : ''}</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;padding-left:26px;">`;
+    if (!a.certificados.length) {
+      html += `<span style="font-size:13px;color:var(--muted);">Nenhum certificado com PDF disponível.</span>`;
+    }
+    a.certificados.forEach((c, ci) => {
+      html += `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" class="colab-cert-${ai}" data-ai="${ai}" data-ci="${ci}"
+          data-pdf="${c.pdf}" data-titulo="${encodeURIComponent(c.titulo)}"
+          data-concluido="${c.concluido}" data-nome="${encodeURIComponent(a.nome)}"
+          style="width:14px;height:14px;accent-color:var(--accent);">
+        <span>${c.titulo || 'Curso sem título'}</span>
+        <span style="color:var(--muted);font-size:11px;">${c.concluido || ''}</span>
+      </label>`;
+    });
+    html += `</div></div>`;
+  });
+  html += `</div>
+  <div style="margin-top:16px;">
+    <button onclick="baixarZip()" style="padding:11px 26px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;">⬇ Baixar selecionados em ZIP</button>
+    <span id="colab-zip-msg" style="margin-left:12px;font-size:13px;color:var(--muted);"></span>
+  </div>`;
+  div.innerHTML = html;
+  // Armazena dados dos alunos para acesso posterior
+  div._alunos = alunos;
+}
+
+function toggleAluno(ai, checked) {
+  document.querySelectorAll(`.colab-cert-${ai}`).forEach(cb => cb.checked = checked);
+}
+
+async function baixarZip() {
+  const checks = document.querySelectorAll("[class^='colab-cert-']:checked, [class*=' colab-cert-']:checked");
+  const selecionados = document.querySelectorAll("input[class*='colab-cert-']:checked");
+  const itens = [];
+  selecionados.forEach(cb => {
+    itens.push({
+      pdf: cb.dataset.pdf,
+      titulo: decodeURIComponent(cb.dataset.titulo),
+      concluido: cb.dataset.concluido,
+      nome: decodeURIComponent(cb.dataset.nome),
+    });
+  });
+  if (!itens.length) { document.getElementById("colab-zip-msg").textContent = "Selecione ao menos um certificado."; return; }
+  const msg = document.getElementById("colab-zip-msg");
+  msg.textContent = `Baixando ${itens.length} PDF(s)... pode demorar alguns segundos.`;
+  try {
+    const res = await fetch("/api/colaboradores/zip", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({itens})
+    });
+    if (!res.ok) { msg.textContent = "Erro ao gerar ZIP."; return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "certificados.zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    msg.textContent = `ZIP com ${itens.length} certificado(s) baixado.`;
+  } catch(e) { msg.textContent = "Erro ao baixar ZIP."; }
+}
 </script>
 </body>
 </html>

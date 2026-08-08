@@ -1023,6 +1023,105 @@ def email_stats():
     })
 
 
+@app.route("/api/colaboradores/buscar", methods=["POST"])
+def colaboradores_buscar():
+    """Recebe lista de CPFs/emails e retorna alunos encontrados com seus certificados."""
+    body = request.get_json(force=True) or {}
+    termos_raw = body.get("termos", [])
+    if not termos_raw:
+        return jsonify({"erro": "Nenhum CPF/e-mail informado."}), 400
+
+    # Normaliza termos: remove pontuação de CPF para comparar
+    def norm_cpf(v):
+        return re.sub(r"[.\-\s]", "", v.strip())
+
+    termos_email = set()
+    termos_cpf = set()
+    for t in termos_raw:
+        t = t.strip()
+        if not t:
+            continue
+        if "@" in t:
+            termos_email.add(t.lower())
+        else:
+            termos_cpf.add(norm_cpf(t))
+
+    students = load_table("students")
+    certificates = load_table("certificates")
+
+    # Indexa certificados por aluno_id
+    certs_por_aluno = defaultdict(list)
+    for c in certificates:
+        aid = c.get("aluno_id")
+        if aid and c.get("certificado_pdf") and c.get("concluido"):
+            certs_por_aluno[aid].append(c)
+
+    encontrados = {}
+    for s in students:
+        aid = s.get("aluno_id")
+        email_s = (s.get("email") or "").lower()
+        cpf_s = norm_cpf(s.get("cpf") or "")
+        if email_s in termos_email or (cpf_s and cpf_s in termos_cpf):
+            if aid not in encontrados:
+                certs = certs_por_aluno.get(aid, [])
+                encontrados[aid] = {
+                    "aluno_id": aid,
+                    "nome": s.get("nome", ""),
+                    "email": s.get("email", ""),
+                    "cpf": s.get("cpf", ""),
+                    "certificados": [
+                        {
+                            "curso_id": c.get("curso_id"),
+                            "titulo": c.get("curso_titulo", ""),
+                            "concluido": (c.get("concluido") or "")[:10],
+                            "pdf": c.get("certificado_pdf", ""),
+                        }
+                        for c in sorted(certs, key=lambda x: x.get("concluido") or "", reverse=True)
+                    ],
+                }
+
+    return jsonify({"alunos": list(encontrados.values())})
+
+
+@app.route("/api/colaboradores/zip", methods=["POST"])
+def colaboradores_zip():
+    """Recebe lista de {aluno_id, curso_id, pdf, titulo, nome} e retorna ZIP com PDFs."""
+    import zipfile
+    body = request.get_json(force=True) or {}
+    itens = body.get("itens", [])
+    if not itens:
+        return jsonify({"erro": "Nenhum certificado selecionado."}), 400
+
+    buf = io.BytesIO()
+    erros = []
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for item in itens:
+            pdf_url = item.get("pdf", "")
+            nome_aluno = re.sub(r"[^\w\s\-]", "", item.get("nome", "Aluno")).strip()
+            titulo = re.sub(r"[^\w\s\-]", "", item.get("titulo", "Curso")).strip()
+            concluido = item.get("concluido", "")
+            filename = f"{nome_aluno} — {titulo} ({concluido}).pdf"
+            try:
+                r = requests.get(pdf_url, timeout=20, headers=HEADERS)
+                if r.status_code == 200:
+                    zf.writestr(filename, r.content)
+                else:
+                    erros.append(f"{nome_aluno}/{titulo}: HTTP {r.status_code}")
+            except Exception as e:
+                erros.append(f"{nome_aluno}/{titulo}: {e}")
+
+    buf.seek(0)
+    if erros:
+        app.logger.warning("ZIP — erros ao baixar PDFs: %s", erros)
+
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name="certificados.zip",
+        mimetype="application/zip",
+    )
+
+
 if __name__ == "__main__":
     try:
         import openpyxl
