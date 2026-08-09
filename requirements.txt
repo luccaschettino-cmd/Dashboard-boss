@@ -3,3 +3,4 @@ requests
 python-dotenv
 gunicorn
 openpyxl
+psycopg2-binary

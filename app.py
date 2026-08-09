@@ -1,7 +1,6 @@
 from flask import Flask, render_template, jsonify, send_file, request
 import requests
 import os
-import sqlite3
 import json
 import io
 import smtplib
@@ -12,6 +11,8 @@ from dotenv import load_dotenv
 from collections import defaultdict
 import re
 import threading
+import psycopg2
+import psycopg2.extras
 
 load_dotenv()
 
@@ -20,7 +21,7 @@ app = Flask(__name__)
 TOKEN = os.getenv("EAD_TOKEN")
 BASE_URL = "https://bosstreinamentos.com/api/1"
 HEADERS = {"x-auth-token": TOKEN}
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 VALIDADE_NR = [
@@ -43,6 +44,10 @@ UF_SIGLAS = {
     "SANTA CATARINA": "SC", "SÃO PAULO": "SP", "SERGIPE": "SE",
     "TOCANTINS": "TO",
 }
+
+
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
 
 
 def validade_curso(titulo, regras=None):
@@ -69,33 +74,51 @@ _table_cache: dict = {}
 
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn = get_conn()
     c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS enrollments (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
-    c.execute("CREATE TABLE IF NOT EXISTS certificates (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
-    c.execute("CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
-    c.execute("CREATE TABLE IF NOT EXISTS progress (id INTEGER PRIMARY KEY, data TEXT NOT NULL, synced_at TEXT NOT NULL)")
-    c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-    c.execute("""CREATE TABLE IF NOT EXISTS emails_enviados (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        aluno_id INTEGER NOT NULL,
-        curso_id INTEGER NOT NULL,
-        faixa INTEGER NOT NULL,
-        data_envio TEXT NOT NULL
-    )""")
+    # Tabelas principais — id é TEXT para suportar IDs da API e fallback "o{offset}_{i}"
+    for table in ("enrollments", "certificates", "students", "progress"):
+        c.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                id TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                synced_at TEXT NOT NULL
+            )
+        """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS emails_enviados (
+            id SERIAL PRIMARY KEY,
+            aluno_id BIGINT NOT NULL,
+            curso_id BIGINT NOT NULL,
+            faixa INTEGER NOT NULL,
+            data_envio TEXT NOT NULL
+        )
+    """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_emails_aluno_curso ON emails_enviados(aluno_id, curso_id, faixa)")
-    c.execute("""CREATE TABLE IF NOT EXISTS validades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        padrao TEXT NOT NULL,
-        dias INTEGER NOT NULL,
-        ordem INTEGER NOT NULL DEFAULT 0
-    )""")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS validades (
+            id SERIAL PRIMARY KEY,
+            padrao TEXT NOT NULL,
+            dias INTEGER NOT NULL,
+            ordem INTEGER NOT NULL DEFAULT 0
+        )
+    """)
     # Seed validades padrão se tabela vazia
-    if c.execute("SELECT COUNT(*) FROM validades").fetchone()[0] == 0:
-        for i, (padrao, dias) in enumerate(VALIDADE_NR):
-            c.execute("INSERT INTO validades (padrao, dias, ordem) VALUES (?,?,?)", (padrao, dias, i))
+    c.execute("SELECT COUNT(*) FROM validades")
+    if c.fetchone()[0] == 0:
+        psycopg2.extras.execute_values(
+            c,
+            "INSERT INTO validades (padrao, dias, ordem) VALUES %s",
+            [(padrao, dias, i) for i, (padrao, dias) in enumerate(VALIDADE_NR)]
+        )
     conn.commit()
+    c.close()
     conn.close()
 
 
@@ -104,16 +127,22 @@ init_db()
 
 def get_validades():
     """Retorna lista de (padrao, dias) ordenada para uso em validade_curso()."""
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT padrao, dias FROM validades ORDER BY ordem").fetchall()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT padrao, dias FROM validades ORDER BY ordem")
+    rows = c.fetchall()
+    c.close()
     conn.close()
     return [(r[0], r[1]) for r in rows] if rows else VALIDADE_NR
 
 
 def get_meta(key):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT value FROM meta WHERE key=%s", (key,))
+        row = c.fetchone()
+        c.close()
         conn.close()
         return row[0] if row else None
     except Exception as e:
@@ -123,8 +152,11 @@ def get_meta(key):
 
 def count_table(table):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute(f"SELECT COUNT(*) FROM {table}")
+        n = c.fetchone()[0]
+        c.close()
         conn.close()
         return n
     except Exception as e:
@@ -134,25 +166,26 @@ def count_table(table):
 
 def load_table(table):
     if table not in _table_cache:
-        conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute(f"SELECT data FROM {table}").fetchall()
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute(f"SELECT data FROM {table}")
+        rows = c.fetchall()
+        c.close()
         conn.close()
         _table_cache[table] = [json.loads(r[0]) for r in rows]
     return _table_cache[table]
 
 
 def sync_endpoint(endpoint, table, label, id_field=None, data_minima="2023-01-01"):
-    """Busca endpoint paginado e salva no SQLite registros a partir de data_minima."""
+    """Busca endpoint paginado e salva no PostgreSQL registros a partir de data_minima."""
     LIMIT = 200
-    # Campos de data usados por cada endpoint para filtrar
     CAMPOS_DATA = {"enrollment": "cadastro", "certificate": "concluido", "progress": None, "student": None}
     campo_data = CAMPOS_DATA.get(endpoint)
 
     offset = 0
     total_salvos = 0
     total_lidos = 0
-    parou_por_data = False
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     try:
         c = conn.cursor()
         c.execute(f"DELETE FROM {table}")
@@ -173,19 +206,22 @@ def sync_endpoint(endpoint, table, label, id_field=None, data_minima="2023-01-01
                 now_str = datetime.now().isoformat()
                 batch = []
                 for i, e in enumerate(items):
-                    # Filtra por data mínima quando o endpoint tem campo de data
                     if campo_data and data_minima:
                         val = (e.get(campo_data) or "")[:10]
                         if val and val < data_minima:
-                            parou_por_data = True
                             continue
                     if id_field:
                         row_id = e.get(id_field) or f"o{offset}_{i}"
                     else:
                         row_id = e.get("id") or e.get("matricula_id") or e.get("aluno_id") or f"o{offset}_{i}"
-                    batch.append((row_id, json.dumps(e), now_str))
+                    batch.append((str(row_id), json.dumps(e), now_str))
                 if batch:
-                    c.executemany(f"INSERT OR REPLACE INTO {table} (id, data, synced_at) VALUES (?,?,?)", batch)
+                    psycopg2.extras.execute_values(
+                        c,
+                        f"""INSERT INTO {table} (id, data, synced_at) VALUES %s
+                            ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, synced_at=EXCLUDED.synced_at""",
+                        batch
+                    )
                     conn.commit()
                 total_salvos += len(batch)
                 sync_status["progress"] = f"{label}: {total_lidos} lidos, {total_salvos} salvos"
@@ -201,6 +237,7 @@ def sync_endpoint(endpoint, table, label, id_field=None, data_minima="2023-01-01
                 app.logger.exception("sync_endpoint %s offset %d", label, offset)
                 break
     finally:
+        c.close()
         conn.close()
     return total_salvos
 
@@ -214,7 +251,7 @@ def sync_endpoint_rapido(endpoint, table, label, paginas=10, id_field=None):
     total_lidos = 0
     total_salvos = 0
     offset = offset_inicial
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     try:
         c = conn.cursor()
         while True:
@@ -237,8 +274,13 @@ def sync_endpoint_rapido(endpoint, table, label, paginas=10, id_field=None):
                         row_id = e.get(id_field) or f"o{offset}_{i}"
                     else:
                         row_id = e.get("id") or e.get("matricula_id") or e.get("aluno_id") or f"o{offset}_{i}"
-                    batch.append((row_id, json.dumps(e), now_str))
-                c.executemany(f"INSERT OR REPLACE INTO {table} (id, data, synced_at) VALUES (?,?,?)", batch)
+                    batch.append((str(row_id), json.dumps(e), now_str))
+                psycopg2.extras.execute_values(
+                    c,
+                    f"""INSERT INTO {table} (id, data, synced_at) VALUES %s
+                        ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, synced_at=EXCLUDED.synced_at""",
+                    batch
+                )
                 conn.commit()
                 total_salvos += len(items)
                 sync_status["progress"] = f"{label} (rápido): {total_lidos} verificados, {total_salvos} atualizados"
@@ -254,15 +296,24 @@ def sync_endpoint_rapido(endpoint, table, label, paginas=10, id_field=None):
                 app.logger.exception("sync_endpoint_rapido %s offset %d", label, offset)
                 break
     finally:
+        c.close()
         conn.close()
     return total_salvos
 
 
 def _salvar_meta_sync(now_str, modo):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("INSERT OR REPLACE INTO meta VALUES ('last_sync', ?)", (now_str,))
-    conn.execute("INSERT OR REPLACE INTO meta VALUES ('last_sync_modo', ?)", (modo,))
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO meta (key, value) VALUES (%s, %s)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+    """, ("last_sync", now_str))
+    c.execute("""
+        INSERT INTO meta (key, value) VALUES (%s, %s)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+    """, ("last_sync_modo", modo))
     conn.commit()
+    c.close()
     conn.close()
 
 
@@ -309,7 +360,6 @@ def extract_empresa(grupo_nome):
 
 
 def mapa_student():
-    """aluno_id -> dict do student (telefone, cpf, cidade, uf, ultimo_acesso)."""
     m = {}
     for s in load_table("students"):
         aid = s.get("aluno_id")
@@ -319,7 +369,6 @@ def mapa_student():
 
 
 def mapa_email():
-    """aluno_id -> email, a partir das matrículas."""
     m = {}
     for e in load_table("enrollments"):
         aid = e.get("aluno_id")
@@ -330,7 +379,6 @@ def mapa_email():
 
 
 def mapa_canal():
-    """aluno_id -> 'B2B'/'B2C'. B2B prevalece se aluno aparece nos dois."""
     m = {}
     for e in load_table("enrollments"):
         aid = e.get("aluno_id")
@@ -343,7 +391,6 @@ def mapa_canal():
 
 
 def mapa_empresa():
-    """aluno_id -> nome da empresa (B2B apenas, último grupo encontrado)."""
     m = {}
     for e in load_table("enrollments"):
         aid = e.get("aluno_id")
@@ -355,7 +402,6 @@ def mapa_empresa():
 
 
 def compute_geo(enrollments, students_map):
-    """Distribuição de alunos B2C ativos por UF (sigla)."""
     b2c_ativos_ids = {
         e.get("aluno_id")
         for e in enrollments
@@ -389,7 +435,6 @@ def compute_vendas(enrollments, ano):
     b2b = [e for e in enrollments if e.get("grupo_nome")]
     b2c = [e for e in enrollments if not e.get("grupo_nome")]
 
-    # Totais ativos são sempre o estado atual (sem filtro de ano)
     b2b_active = [e for e in b2b if e.get("status") == 1]
     b2c_active = [e for e in b2c if e.get("status") == 1]
     total_active = len(b2b_active) + len(b2c_active)
@@ -400,12 +445,10 @@ def compute_vendas(enrollments, ano):
         if emp:
             empresa_count_ativas[emp] += 1
 
-    # Filtrados pelo ano selecionado para tendência, top10 e KPI de vendas
     b2b_ano = [e for e in b2b if (e.get("cadastro") or "").startswith(ano_str)]
     b2c_ano = [e for e in b2c if (e.get("cadastro") or "").startswith(ano_str)]
     enr_ano = [e for e in enrollments if (e.get("cadastro") or "").startswith(ano_str)]
 
-    # KPI de vendas: mês a mês se ano atual, anual vs. anterior se ano passado
     if ano == ano_atual:
         mes_anterior = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
         vendas_kpi = len([e for e in enr_ano if (e.get("cadastro") or "").startswith(mes_atual)])
@@ -421,7 +464,6 @@ def compute_vendas(enrollments, ano):
 
     var_pct = round((vendas_kpi - vendas_ant) / vendas_ant * 100, 1) if vendas_ant else 0
 
-    # Top 10 pelo ano selecionado
     empresa_count_ano = defaultdict(int)
     for e in b2b_ano:
         emp = extract_empresa(e.get("grupo_nome", ""))
@@ -434,7 +476,6 @@ def compute_vendas(enrollments, ano):
         curso_count[e.get("titulo_curso") or "Sem nome"] += 1
     top10_cursos = sorted(curso_count.items(), key=lambda x: x[1], reverse=True)[:10]
 
-    # Trend: todos os 12 meses do ano selecionado
     trend = {f"{ano_str}-{m:02d}": {"b2b": 0, "b2c": 0} for m in range(1, 13)}
     for e in b2b_ano:
         mes = (e.get("cadastro") or "")[:7]
@@ -471,7 +512,6 @@ def compute_vendas(enrollments, ano):
 
 
 def compute_funil(progress_data):
-    """Conta alunos por situação de progresso: Concluído / Em Andamento / Não Iniciado."""
     counts = {"Concluído": 0, "Em Andamento": 0, "Não Iniciado": 0}
     for p in progress_data:
         s = p.get("situacao") or "Não Iniciado"
@@ -489,7 +529,6 @@ def compute_funil(progress_data):
 
 
 def compute_novos_recorrentes(enrollments, ano):
-    """Para o ano selecionado: quantos alunos únicos compram pela 1ª vez vs. já eram clientes."""
     ano_str = str(ano)
     primeiro_ano = {}
     for e in enrollments:
@@ -520,9 +559,7 @@ def compute_novos_recorrentes(enrollments, ano):
 
 
 def compute_conclusao_cursos(enrollments, certificates, ano, min_enrolled=5):
-    """Taxa de conclusão por curso para o ano selecionado (alunos com cert / alunos matriculados)."""
     ano_str = str(ano)
-
     enrolled = defaultdict(set)
     for e in enrollments:
         if (e.get("cadastro") or "").startswith(ano_str):
@@ -555,11 +592,7 @@ def compute_conclusao_cursos(enrollments, certificates, ano, min_enrolled=5):
     return result[:15]
 
 
-# Cursos excluídos da fila de recertificação (não aparecem nos e-mails nem no contador)
-CURSOS_EXCLUIDOS_RECERT = [
-    "NR-35",
-    "NR 35",
-]
+CURSOS_EXCLUIDOS_RECERT = ["NR-35", "NR 35"]
 
 
 def _curso_excluido(titulo):
@@ -568,35 +601,20 @@ def _curso_excluido(titulo):
 
 
 def norma_base(titulo):
-    """Extrai a norma base do título removendo o ano e lixo extra.
-
-    'NR-33 - Espaço Confinado 2025' → 'NR-33 - Espaço Confinado'
-    'NR 20 - Líquidos - Intermediário Classe III - 2026' → 'NR-20 - Líquidos - Intermediário Classe III'
-    'Direção Defensiva 2024 - 3 anos - 16h' → 'Direção Defensiva'
-    'Primeiros Socorros 2025' → 'Primeiros Socorros'
-    """
     if not titulo:
         return ""
     t = titulo.strip()
-    # Remove sufixos de carga horária e validade: "- 3 anos - 16h", "- 40h", etc.
     t = re.sub(r'\s*-\s*\d+\s*(anos?|h|horas?)\b.*$', '', t, flags=re.IGNORECASE)
-    # Remove o ano (4 dígitos isolados)
     t = re.sub(r'\b(19|20)\d{2}\b', '', t)
-    # Normaliza "NR 33" → "NR-33"
     t = re.sub(r'\bNR\s+(\d+)\b', r'NR-\1', t, flags=re.IGNORECASE)
-    # Remove traços e espaços sobrando no final
     t = re.sub(r'[\s\-]+$', '', t)
     t = re.sub(r'\s{2,}', ' ', t)
     return t.strip()
 
 
 def compute_recert_lista(certificates, students_map, emails, canais, empresas):
-    """Lista deduplicada de recertificações nos próximos 90 dias, enriquecida com dados do aluno.
-
-    Deduplicação por (aluno_id, norma_base) — agrupa NR-33 2025 e NR-33 2026 como o mesmo curso.
-    """
     now = datetime.now()
-    regras = get_validades()  # carrega uma vez só fora do loop
+    regras = get_validades()
     ultimo = {}
     for c in certificates:
         aluno = c.get("aluno_id")
@@ -606,7 +624,6 @@ def compute_recert_lista(certificates, students_map, emails, canais, empresas):
             continue
         if _curso_excluido(titulo):
             continue
-        # Chave por norma base, não por curso_id — agrupa versões anuais do mesmo curso
         chave = (aluno, norma_base(titulo))
         atual = ultimo.get(chave)
         if atual is None or concl > (atual.get("concluido") or "")[:10]:
@@ -737,8 +754,6 @@ def exportar():
     fill_30 = PatternFill(start_color="FDE7E7", end_color="FDE7E7", fill_type="solid")
     fill_60 = PatternFill(start_color="FEF3E2", end_color="FEF3E2", fill_type="solid")
     fill_90 = PatternFill(start_color="E7F0FD", end_color="E7F0FD", fill_type="solid")
-
-    # Colunas centralizadas
     cols_center = {1, 2, 8, 9, 12, 13, 14, 15}
 
     for item in lista:
@@ -811,19 +826,24 @@ def _faixa_label(dias):
 
 def _ja_enviou(conn, aluno_id, curso_id, faixa):
     limite = (datetime.now() - timedelta(days=25)).isoformat()
-    row = conn.execute(
-        "SELECT id FROM emails_enviados WHERE aluno_id=? AND curso_id=? AND faixa=? AND data_envio>?",
+    c = conn.cursor()
+    c.execute(
+        "SELECT id FROM emails_enviados WHERE aluno_id=%s AND curso_id=%s AND faixa=%s AND data_envio>%s",
         (aluno_id, curso_id, faixa, limite)
-    ).fetchone()
+    )
+    row = c.fetchone()
+    c.close()
     return row is not None
 
 
 def _registrar_envio(conn, aluno_id, curso_id, faixa):
-    conn.execute(
-        "INSERT INTO emails_enviados (aluno_id, curso_id, faixa, data_envio) VALUES (?,?,?,?)",
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO emails_enviados (aluno_id, curso_id, faixa, data_envio) VALUES (%s,%s,%s,%s)",
         (aluno_id, curso_id, faixa, datetime.now().isoformat())
     )
     conn.commit()
+    c.close()
 
 
 def _corpo_email(nome, curso, dias, empresa=None):
@@ -866,7 +886,7 @@ def _corpo_email(nome, curso, dias, empresa=None):
 
 def _do_envio(lista, faixa_filtro):
     global email_status
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     try:
         smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
         smtp.starttls()
@@ -926,7 +946,6 @@ def _do_envio(lista, faixa_filtro):
 
 @app.route("/api/enviar_recert/teste", methods=["POST"])
 def enviar_recert_teste():
-    """Envia um e-mail de exemplo para o endereço informado — não registra na tabela de controle."""
     if not EMAIL_SENHA:
         return jsonify({"erro": "EMAIL_SENHA não configurada no .env"}), 500
 
@@ -1005,8 +1024,6 @@ def email_status_route():
 
 @app.route("/api/email/stats")
 def email_stats():
-    """Cruza a fila atual de recertificação com o histórico de envios."""
-    # Monta fila atual (próximos 90 dias)
     certificates = load_table("certificates")
     students_map = mapa_student()
     emails_map = mapa_email()
@@ -1016,22 +1033,22 @@ def email_stats():
     if total_fila == 0:
         return jsonify({"total_fila": 0, "ja_notificados": 0, "pendentes": 0, "ultimo_envio": None})
 
-    # Verifica quais da fila já foram notificados na faixa correta
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
+    c = conn.cursor()
     limite = (datetime.now() - timedelta(days=25)).isoformat()
     ja_notificados = 0
     for item in lista:
         faixa = _faixa_label(item["dias"])
-        row = conn.execute(
-            "SELECT id FROM emails_enviados WHERE aluno_id=? AND curso_id=? AND faixa=? AND data_envio>?",
+        c.execute(
+            "SELECT id FROM emails_enviados WHERE aluno_id=%s AND curso_id=%s AND faixa=%s AND data_envio>%s",
             (item.get("aluno_id"), item.get("curso_id"), faixa, limite)
-        ).fetchone()
-        if row:
+        )
+        if c.fetchone():
             ja_notificados += 1
 
-    ultimo = conn.execute(
-        "SELECT data_envio FROM emails_enviados ORDER BY data_envio DESC LIMIT 1"
-    ).fetchone()
+    c.execute("SELECT data_envio FROM emails_enviados ORDER BY data_envio DESC LIMIT 1")
+    ultimo = c.fetchone()
+    c.close()
     conn.close()
 
     return jsonify({
@@ -1044,31 +1061,34 @@ def email_stats():
 
 @app.route("/api/validades", methods=["GET"])
 def api_validades_get():
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT id, padrao, dias, ordem FROM validades ORDER BY ordem").fetchall()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id, padrao, dias, ordem FROM validades ORDER BY ordem")
+    rows = c.fetchall()
+    c.close()
     conn.close()
     return jsonify([{"id": r[0], "padrao": r[1], "dias": r[2], "ordem": r[3]} for r in rows])
 
 
 @app.route("/api/validades", methods=["POST"])
 def api_validades_post():
-    """Salva lista completa de validades enviada pelo frontend."""
     items = request.get_json(force=True) or []
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("DELETE FROM validades")
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM validades")
     for i, item in enumerate(items):
         padrao = str(item.get("padrao", "")).strip().lower()
         dias = int(item.get("dias", 730))
         if padrao:
-            conn.execute("INSERT INTO validades (padrao, dias, ordem) VALUES (?,?,?)", (padrao, dias, i))
+            c.execute("INSERT INTO validades (padrao, dias, ordem) VALUES (%s,%s,%s)", (padrao, dias, i))
     conn.commit()
+    c.close()
     conn.close()
     return jsonify({"ok": True})
 
 
 @app.route("/api/colaboradores/upload", methods=["POST"])
 def colaboradores_upload():
-    """Recebe planilha Excel, extrai CPFs/e-mails e retorna alunos com certificados."""
     from openpyxl import load_workbook
 
     if "arquivo" not in request.files:
@@ -1090,7 +1110,6 @@ def colaboradores_upload():
     if not rows:
         return jsonify({"erro": "Planilha vazia."}), 400
 
-    # Detecta colunas de CPF e e-mail pelo cabeçalho (primeira linha)
     header = [str(c or "").lower().strip() for c in rows[0]]
     col_cpf, col_email = None, None
     for i, h in enumerate(header):
@@ -1099,7 +1118,6 @@ def colaboradores_upload():
         if col_email is None and any(k in h for k in ("email", "e-mail", "correio")):
             col_email = i
 
-    # Se não achou cabeçalho, varre todas as colunas de todas as linhas
     termos_email = set()
     termos_cpf = set()
     data_rows = rows[1:] if (col_cpf is not None or col_email is not None) else rows
@@ -1113,7 +1131,6 @@ def colaboradores_upload():
             v = norm_cpf(row[col_cpf] or "")
             if len(v) >= 11:
                 termos_cpf.add(v)
-        # Varredura livre quando sem cabeçalho detectado
         if col_cpf is None and col_email is None:
             for cell in row:
                 v = str(cell or "").strip()
@@ -1168,7 +1185,6 @@ def colaboradores_upload():
 
 @app.route("/api/colaboradores/zip", methods=["POST"])
 def colaboradores_zip():
-    """Recebe lista de {aluno_id, curso_id, pdf, titulo, nome} e retorna ZIP com PDFs."""
     import zipfile
     body = request.get_json(force=True) or {}
     itens = body.get("itens", [])
