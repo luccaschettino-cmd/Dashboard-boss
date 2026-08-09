@@ -45,11 +45,11 @@ UF_SIGLAS = {
 }
 
 
-def validade_curso(titulo):
+def validade_curso(titulo, regras=None):
     if not titulo:
         return VALIDADE_PADRAO
     t = titulo.lower()
-    for padrao, dias in VALIDADE_NR:
+    for padrao, dias in (regras or get_validades()):
         if padrao in t:
             return dias
     return VALIDADE_PADRAO
@@ -85,11 +85,29 @@ def init_db():
         data_envio TEXT NOT NULL
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_emails_aluno_curso ON emails_enviados(aluno_id, curso_id, faixa)")
+    c.execute("""CREATE TABLE IF NOT EXISTS validades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        padrao TEXT NOT NULL,
+        dias INTEGER NOT NULL,
+        ordem INTEGER NOT NULL DEFAULT 0
+    )""")
+    # Seed validades padrão se tabela vazia
+    if c.execute("SELECT COUNT(*) FROM validades").fetchone()[0] == 0:
+        for i, (padrao, dias) in enumerate(VALIDADE_NR):
+            c.execute("INSERT INTO validades (padrao, dias, ordem) VALUES (?,?,?)", (padrao, dias, i))
     conn.commit()
     conn.close()
 
 
 init_db()
+
+
+def get_validades():
+    """Retorna lista de (padrao, dias) ordenada para uso em validade_curso()."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT padrao, dias FROM validades ORDER BY ordem").fetchall()
+    conn.close()
+    return [(r[0], r[1]) for r in rows] if rows else VALIDADE_NR
 
 
 def get_meta(key):
@@ -1021,6 +1039,30 @@ def email_stats():
         "pendentes": total_fila - ja_notificados,
         "ultimo_envio": ultimo[0][:10] if ultimo else None,
     })
+
+
+@app.route("/api/validades", methods=["GET"])
+def api_validades_get():
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT id, padrao, dias, ordem FROM validades ORDER BY ordem").fetchall()
+    conn.close()
+    return jsonify([{"id": r[0], "padrao": r[1], "dias": r[2], "ordem": r[3]} for r in rows])
+
+
+@app.route("/api/validades", methods=["POST"])
+def api_validades_post():
+    """Salva lista completa de validades enviada pelo frontend."""
+    items = request.get_json(force=True) or []
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM validades")
+    for i, item in enumerate(items):
+        padrao = str(item.get("padrao", "")).strip().lower()
+        dias = int(item.get("dias", 730))
+        if padrao:
+            conn.execute("INSERT INTO validades (padrao, dias, ordem) VALUES (?,?,?)", (padrao, dias, i))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/colaboradores/upload", methods=["POST"])

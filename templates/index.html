@@ -155,8 +155,43 @@
       <button id="btn-sync-completo" onclick="startSync('completo')" title="Rebusca todo o histórico — leva alguns minutos">↺ Completo</button>
     </div>
     <button id="btn-tema" onclick="toggleTema()" title="Alternar tema"></button>
+    <button onclick="abrirValidades()" title="Validades dos cursos" style="background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;">⚙ Validades</button>
   </div>
 </header>
+
+<!-- MODAL VALIDADES -->
+<div id="modal-validades" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.55);align-items:center;justify-content:center;">
+  <div style="background:var(--card);border-radius:14px;padding:28px 30px;width:min(700px,95vw);max-height:85vh;display:flex;flex-direction:column;gap:16px;box-shadow:0 8px 40px rgba(0,0,0,.4);">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div style="font-size:17px;font-weight:800;">Validades dos cursos</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">O padrão é verificado no título do curso (contém). A primeira regra que bater é usada.</div>
+      </div>
+      <button onclick="fecharValidades()" style="background:transparent;border:none;font-size:20px;cursor:pointer;color:var(--muted);">✕</button>
+    </div>
+
+    <div style="overflow-y:auto;flex:1;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;" id="tabela-validades">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);">
+            <th style="text-align:left;padding:6px 8px;color:var(--muted);font-weight:600;">Padrão (trecho do nome do curso)</th>
+            <th style="text-align:center;padding:6px 8px;color:var(--muted);font-weight:600;width:110px;">Validade (dias)</th>
+            <th style="width:36px;"></th>
+          </tr>
+        </thead>
+        <tbody id="validades-body"></tbody>
+      </table>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <div style="font-size:12px;color:var(--muted);">Padrão para cursos não listados:</div>
+      <input id="val-padrao-dias" type="number" min="1" style="width:80px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;"> dias
+      <button onclick="addLinhaValidade()" style="margin-left:auto;padding:7px 14px;border:1px dashed var(--accent);background:transparent;color:var(--accent);border-radius:7px;font-size:13px;cursor:pointer;">+ Adicionar regra</button>
+      <button onclick="salvarValidades()" style="padding:8px 20px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;">Salvar</button>
+      <span id="val-msg" style="font-size:12px;color:var(--muted);"></span>
+    </div>
+  </div>
+</div>
 
 <div id="banner-wrap" style="width:100%;max-height:140px;overflow:hidden;line-height:0;">
   <img src="/static/05cbd109677f02fca377fcbde3849aaa.png" alt="Boss Treinamentos" style="width:100%;max-height:140px;object-fit:cover;object-position:center;">
@@ -695,6 +730,83 @@ async function startSync(modo="rapido"){
 }
 
 loadDashboard();
+
+// ── VALIDADES ────────────────────────────────────────────────────
+let _validadesData = [];
+
+async function abrirValidades() {
+  document.getElementById("modal-validades").style.display = "flex";
+  const res = await fetch("/api/validades");
+  _validadesData = await res.json();
+  renderValidades();
+}
+
+function fecharValidades() {
+  document.getElementById("modal-validades").style.display = "none";
+}
+
+function renderValidades() {
+  const tbody = document.getElementById("validades-body");
+  tbody.innerHTML = "";
+  _validadesData.forEach((v, i) => {
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid var(--border)";
+    tr.innerHTML = `
+      <td style="padding:5px 8px;">
+        <input data-i="${i}" data-f="padrao" value="${v.padrao}" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;" oninput="updateVal(this)">
+      </td>
+      <td style="padding:5px 8px;text-align:center;">
+        <input data-i="${i}" data-f="dias" type="number" min="1" value="${v.dias}" style="width:90px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;text-align:center;" oninput="updateVal(this)">
+      </td>
+      <td style="padding:5px 4px;text-align:center;">
+        <button data-i="${i}" onclick="removeVal(this)" style="background:transparent;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px;" title="Remover">×</button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+  // Campo validade padrão
+  fetch("/api/validades").then(() => {}); // já carregado
+  const meta = _validadesData.find(v => v._padrao);
+  document.getElementById("val-padrao-dias").value = 730;
+}
+
+function updateVal(input) {
+  const i = +input.dataset.i, f = input.dataset.f;
+  _validadesData[i][f] = f === "dias" ? +input.value : input.value;
+}
+
+function removeVal(btn) {
+  _validadesData.splice(+btn.dataset.i, 1);
+  renderValidades();
+}
+
+function addLinhaValidade() {
+  _validadesData.push({ padrao: "", dias: 730 });
+  renderValidades();
+  // Foca no último input de padrão
+  const inputs = document.querySelectorAll("#validades-body input[data-f='padrao']");
+  if (inputs.length) inputs[inputs.length - 1].focus();
+}
+
+async function salvarValidades() {
+  const msg = document.getElementById("val-msg");
+  msg.textContent = "Salvando...";
+  const payload = _validadesData
+    .filter(v => String(v.padrao).trim())
+    .map(v => ({ padrao: v.padrao, dias: v.dias }));
+  const res = await fetch("/api/validades", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  msg.textContent = data.ok ? "Salvo!" : "Erro ao salvar.";
+  setTimeout(() => msg.textContent = "", 2000);
+}
+
+// Fecha modal ao clicar fora
+document.getElementById("modal-validades").addEventListener("click", function(e) {
+  if (e.target === this) fecharValidades();
+});
 
 // ── COLABORADORES ────────────────────────────────────────────────
 let _colabArquivo = null;
