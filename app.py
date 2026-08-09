@@ -182,63 +182,82 @@ def sync_endpoint(endpoint, table, label, id_field=None, data_minima="2023-01-01
     CAMPOS_DATA = {"enrollment": "cadastro", "certificate": "concluido", "progress": None, "student": None}
     campo_data = CAMPOS_DATA.get(endpoint)
 
-    offset = 0
-    total_salvos = 0
-    total_lidos = 0
-    conn = get_conn()
+    # Limpa a tabela antes de começar
     try:
+        conn = get_conn()
         c = conn.cursor()
         c.execute(f"DELETE FROM {table}")
         conn.commit()
-        while True:
-            try:
-                r = requests.get(f"{BASE_URL}/{endpoint}", headers=HEADERS,
-                                 params={"limit": LIMIT, "offset": offset}, timeout=30)
-                if r.status_code != 200:
-                    break
-                data = r.json()
-                if not data:
-                    break
-                items = data if isinstance(data, list) else (data.get("data") or data.get("results") or [])
-                if not items:
-                    break
-                total_lidos += len(items)
-                now_str = datetime.now().isoformat()
-                batch = []
-                for i, e in enumerate(items):
-                    if campo_data and data_minima:
-                        val = (e.get(campo_data) or "")[:10]
-                        if val and val < data_minima:
-                            continue
-                    if id_field:
-                        row_id = e.get(id_field) or f"o{offset}_{i}"
-                    else:
-                        row_id = e.get("id") or e.get("matricula_id") or e.get("aluno_id") or f"o{offset}_{i}"
-                    batch.append((str(row_id), json.dumps(e), now_str))
-                if batch:
-                    psycopg2.extras.execute_values(
-                        c,
-                        f"""INSERT INTO {table} (id, data, synced_at) VALUES %s
-                            ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, synced_at=EXCLUDED.synced_at""",
-                        batch
-                    )
-                    conn.commit()
-                total_salvos += len(batch)
-                sync_status["progress"] = f"{label}: {total_lidos} lidos, {total_salvos} salvos"
-                sync_status["done"] = total_salvos
-                if len(items) < LIMIT:
-                    break
-                offset += LIMIT
-            except requests.RequestException:
-                sync_status["progress"] = f"{label}: erro na requisição (offset {offset})"
-                break
-            except Exception as e:
-                sync_status["progress"] = f"{label} erro offset {offset}: {type(e).__name__}"
-                app.logger.exception("sync_endpoint %s offset %d", label, offset)
-                break
-    finally:
         c.close()
         conn.close()
+    except Exception as e:
+        app.logger.exception("sync_endpoint DELETE %s falhou", table)
+        sync_status["progress"] = f"{label}: erro ao limpar tabela — {type(e).__name__}"
+        return 0
+
+    offset = 0
+    total_salvos = 0
+    total_lidos = 0
+
+    while True:
+        # Busca da API (sem conexão DB aberta)
+        try:
+            r = requests.get(f"{BASE_URL}/{endpoint}", headers=HEADERS,
+                             params={"limit": LIMIT, "offset": offset}, timeout=30)
+            if r.status_code != 200:
+                app.logger.warning("sync_endpoint %s offset %d: HTTP %d", label, offset, r.status_code)
+                break
+            data = r.json()
+            if not data:
+                break
+            items = data if isinstance(data, list) else (data.get("data") or data.get("results") or [])
+            if not items:
+                break
+        except requests.RequestException as e:
+            sync_status["progress"] = f"{label}: erro na requisição (offset {offset}) — {type(e).__name__}"
+            app.logger.warning("sync_endpoint %s offset %d RequestException: %s", label, offset, e)
+            break
+
+        total_lidos += len(items)
+        now_str = datetime.now().isoformat()
+        batch = []
+        for i, e in enumerate(items):
+            if campo_data and data_minima:
+                val = (e.get(campo_data) or "")[:10]
+                if val and val < data_minima:
+                    continue
+            if id_field:
+                row_id = e.get(id_field) or f"o{offset}_{i}"
+            else:
+                row_id = e.get("id") or e.get("matricula_id") or e.get("aluno_id") or f"o{offset}_{i}"
+            batch.append((str(row_id), json.dumps(e), now_str))
+
+        # Salva batch com nova conexão (evita timeout de conexão ociosa)
+        if batch:
+            try:
+                conn = get_conn()
+                c = conn.cursor()
+                psycopg2.extras.execute_values(
+                    c,
+                    f"""INSERT INTO {table} (id, data, synced_at) VALUES %s
+                        ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, synced_at=EXCLUDED.synced_at""",
+                    batch
+                )
+                conn.commit()
+                c.close()
+                conn.close()
+                total_salvos += len(batch)
+            except Exception as e:
+                app.logger.exception("sync_endpoint %s offset %d: erro ao salvar batch", label, offset)
+                sync_status["progress"] = f"{label} erro ao salvar offset {offset}: {type(e).__name__}"
+                break
+
+        sync_status["progress"] = f"{label}: {total_lidos} lidos, {total_salvos} salvos"
+        sync_status["done"] = total_salvos
+        if len(items) < LIMIT:
+            break
+        offset += LIMIT
+
     return total_salvos
 
 
@@ -251,53 +270,59 @@ def sync_endpoint_rapido(endpoint, table, label, paginas=10, id_field=None):
     total_lidos = 0
     total_salvos = 0
     offset = offset_inicial
-    conn = get_conn()
-    try:
-        c = conn.cursor()
-        while True:
-            try:
-                r = requests.get(f"{BASE_URL}/{endpoint}", headers=HEADERS,
-                                 params={"limit": LIMIT, "offset": offset}, timeout=30)
-                if r.status_code != 200:
-                    break
-                data = r.json()
-                if not data:
-                    break
-                items = data if isinstance(data, list) else (data.get("data") or data.get("results") or [])
-                if not items:
-                    break
-                total_lidos += len(items)
-                now_str = datetime.now().isoformat()
-                batch = []
-                for i, e in enumerate(items):
-                    if id_field:
-                        row_id = e.get(id_field) or f"o{offset}_{i}"
-                    else:
-                        row_id = e.get("id") or e.get("matricula_id") or e.get("aluno_id") or f"o{offset}_{i}"
-                    batch.append((str(row_id), json.dumps(e), now_str))
-                psycopg2.extras.execute_values(
-                    c,
-                    f"""INSERT INTO {table} (id, data, synced_at) VALUES %s
-                        ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, synced_at=EXCLUDED.synced_at""",
-                    batch
-                )
-                conn.commit()
-                total_salvos += len(items)
-                sync_status["progress"] = f"{label} (rápido): {total_lidos} verificados, {total_salvos} atualizados"
-                sync_status["done"] = total_salvos
-                if len(items) < LIMIT:
-                    break
-                offset += LIMIT
-            except requests.RequestException:
-                sync_status["progress"] = f"{label}: erro na requisição (offset {offset})"
+
+    while True:
+        # Busca da API (sem conexão DB aberta)
+        try:
+            r = requests.get(f"{BASE_URL}/{endpoint}", headers=HEADERS,
+                             params={"limit": LIMIT, "offset": offset}, timeout=30)
+            if r.status_code != 200:
                 break
-            except Exception as e:
-                sync_status["progress"] = f"{label} erro offset {offset}: {type(e).__name__}"
-                app.logger.exception("sync_endpoint_rapido %s offset %d", label, offset)
+            data = r.json()
+            if not data:
                 break
-    finally:
-        c.close()
-        conn.close()
+            items = data if isinstance(data, list) else (data.get("data") or data.get("results") or [])
+            if not items:
+                break
+        except requests.RequestException as e:
+            sync_status["progress"] = f"{label}: erro na requisição (offset {offset}) — {type(e).__name__}"
+            break
+
+        total_lidos += len(items)
+        now_str = datetime.now().isoformat()
+        batch = []
+        for i, e in enumerate(items):
+            if id_field:
+                row_id = e.get(id_field) or f"o{offset}_{i}"
+            else:
+                row_id = e.get("id") or e.get("matricula_id") or e.get("aluno_id") or f"o{offset}_{i}"
+            batch.append((str(row_id), json.dumps(e), now_str))
+
+        # Salva batch com nova conexão
+        try:
+            conn = get_conn()
+            c = conn.cursor()
+            psycopg2.extras.execute_values(
+                c,
+                f"""INSERT INTO {table} (id, data, synced_at) VALUES %s
+                    ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, synced_at=EXCLUDED.synced_at""",
+                batch
+            )
+            conn.commit()
+            c.close()
+            conn.close()
+            total_salvos += len(items)
+        except Exception as e:
+            app.logger.exception("sync_endpoint_rapido %s offset %d: erro ao salvar batch", label, offset)
+            sync_status["progress"] = f"{label} erro ao salvar offset {offset}: {type(e).__name__}"
+            break
+
+        sync_status["progress"] = f"{label} (rápido): {total_lidos} verificados, {total_salvos} atualizados"
+        sync_status["done"] = total_salvos
+        if len(items) < LIMIT:
+            break
+        offset += LIMIT
+
     return total_salvos
 
 
