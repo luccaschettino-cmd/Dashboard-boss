@@ -1023,33 +1023,70 @@ def email_stats():
     })
 
 
-@app.route("/api/colaboradores/buscar", methods=["POST"])
-def colaboradores_buscar():
-    """Recebe lista de CPFs/emails e retorna alunos encontrados com seus certificados."""
-    body = request.get_json(force=True) or {}
-    termos_raw = body.get("termos", [])
-    if not termos_raw:
-        return jsonify({"erro": "Nenhum CPF/e-mail informado."}), 400
+@app.route("/api/colaboradores/upload", methods=["POST"])
+def colaboradores_upload():
+    """Recebe planilha Excel, extrai CPFs/e-mails e retorna alunos com certificados."""
+    from openpyxl import load_workbook
 
-    # Normaliza termos: remove pontuação de CPF para comparar
+    if "arquivo" not in request.files:
+        return jsonify({"erro": "Nenhum arquivo enviado."}), 400
+    f = request.files["arquivo"]
+    if not f.filename.endswith((".xlsx", ".xls")):
+        return jsonify({"erro": "Envie um arquivo .xlsx ou .xls."}), 400
+
     def norm_cpf(v):
-        return re.sub(r"[.\-\s]", "", v.strip())
+        return re.sub(r"[.\-\s/]", "", str(v).strip())
 
+    try:
+        wb = load_workbook(f, read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+    except Exception as e:
+        return jsonify({"erro": f"Erro ao ler planilha: {e}"}), 400
+
+    if not rows:
+        return jsonify({"erro": "Planilha vazia."}), 400
+
+    # Detecta colunas de CPF e e-mail pelo cabeçalho (primeira linha)
+    header = [str(c or "").lower().strip() for c in rows[0]]
+    col_cpf, col_email = None, None
+    for i, h in enumerate(header):
+        if col_cpf is None and any(k in h for k in ("cpf", "documento", "doc")):
+            col_cpf = i
+        if col_email is None and any(k in h for k in ("email", "e-mail", "correio")):
+            col_email = i
+
+    # Se não achou cabeçalho, varre todas as colunas de todas as linhas
     termos_email = set()
     termos_cpf = set()
-    for t in termos_raw:
-        t = t.strip()
-        if not t:
-            continue
-        if "@" in t:
-            termos_email.add(t.lower())
-        else:
-            termos_cpf.add(norm_cpf(t))
+    data_rows = rows[1:] if (col_cpf is not None or col_email is not None) else rows
+
+    for row in data_rows:
+        if col_email is not None and col_email < len(row):
+            v = str(row[col_email] or "").strip()
+            if "@" in v:
+                termos_email.add(v.lower())
+        if col_cpf is not None and col_cpf < len(row):
+            v = norm_cpf(row[col_cpf] or "")
+            if len(v) >= 11:
+                termos_cpf.add(v)
+        # Varredura livre quando sem cabeçalho detectado
+        if col_cpf is None and col_email is None:
+            for cell in row:
+                v = str(cell or "").strip()
+                if "@" in v:
+                    termos_email.add(v.lower())
+                else:
+                    n = norm_cpf(v)
+                    if len(n) == 11 and n.isdigit():
+                        termos_cpf.add(n)
+
+    if not termos_email and not termos_cpf:
+        return jsonify({"erro": "Nenhum CPF ou e-mail encontrado na planilha."}), 400
 
     students = load_table("students")
     certificates = load_table("certificates")
 
-    # Indexa certificados por aluno_id
     certs_por_aluno = defaultdict(list)
     for c in certificates:
         aid = c.get("aluno_id")
@@ -1061,7 +1098,7 @@ def colaboradores_buscar():
         aid = s.get("aluno_id")
         email_s = (s.get("email") or "").lower()
         cpf_s = norm_cpf(s.get("cpf") or "")
-        if email_s in termos_email or (cpf_s and cpf_s in termos_cpf):
+        if email_s in termos_email or (len(cpf_s) >= 11 and cpf_s in termos_cpf):
             if aid not in encontrados:
                 certs = certs_por_aluno.get(aid, [])
                 encontrados[aid] = {
@@ -1080,7 +1117,10 @@ def colaboradores_buscar():
                     ],
                 }
 
-    return jsonify({"alunos": list(encontrados.values())})
+    return jsonify({
+        "alunos": list(encontrados.values()),
+        "lidos": len(termos_email) + len(termos_cpf),
+    })
 
 
 @app.route("/api/colaboradores/zip", methods=["POST"])

@@ -294,12 +294,29 @@
     <!-- BLOCO 4 — CERTIFICADOS DE COLABORADORES -->
     <section id="secao-colaboradores">
       <div class="bloco-titulo">Certificados de colaboradores</div>
-      <div class="bloco-sub">Cole CPFs ou e-mails (um por linha) para encontrar os certificados e baixar em ZIP.</div>
+      <div class="bloco-sub">Importe uma planilha Excel com CPFs ou e-mails dos colaboradores para baixar os certificados em ZIP.</div>
 
       <div class="card" style="max-width:680px;">
-        <label style="font-size:13px;font-weight:600;color:var(--muted);display:block;margin-bottom:6px;">CPFs / E-mails</label>
-        <textarea id="colab-input" rows="5" placeholder="joao@empresa.com&#10;123.456.789-00&#10;maria@empresa.com" style="width:100%;box-sizing:border-box;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:14px;font-family:inherit;resize:vertical;"></textarea>
-        <button onclick="buscarColaboradores()" style="margin-top:10px;padding:10px 22px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;">Buscar</button>
+        <label style="font-size:13px;font-weight:600;color:var(--muted);display:block;margin-bottom:8px;">Planilha Excel (.xlsx)</label>
+
+        <label id="colab-drop" for="colab-file-input"
+          style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+                 border:2px dashed var(--border);border-radius:10px;padding:28px 20px;cursor:pointer;
+                 transition:border-color .2s,background .2s;"
+          ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
+          ondragleave="this.style.borderColor='var(--border)'"
+          ondrop="handleDrop(event)">
+          <span style="font-size:28px;">📂</span>
+          <span style="font-size:14px;color:var(--muted);">Arraste o arquivo aqui ou <strong style="color:var(--accent)">clique para selecionar</strong></span>
+          <span id="colab-filename" style="font-size:12px;color:var(--muted);"></span>
+        </label>
+        <input id="colab-file-input" type="file" accept=".xlsx,.xls" style="display:none" onchange="onFileSelect(this)">
+
+        <div style="margin-top:8px;font-size:12px;color:var(--muted);">
+          A planilha pode ter qualquer formato — o sistema detecta automaticamente colunas de CPF e e-mail pelo cabeçalho.
+        </div>
+
+        <button onclick="buscarColaboradores()" style="margin-top:14px;padding:10px 22px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;">Buscar certificados</button>
         <span id="colab-msg" style="margin-left:12px;font-size:13px;color:var(--muted);"></span>
       </div>
 
@@ -679,25 +696,43 @@ async function startSync(modo="rapido"){
 loadDashboard();
 
 // ── COLABORADORES ────────────────────────────────────────────────
+let _colabArquivo = null;
+
+function onFileSelect(input) {
+  if (input.files[0]) setColabFile(input.files[0]);
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById("colab-drop").style.borderColor = "var(--border)";
+  const file = e.dataTransfer.files[0];
+  if (file) setColabFile(file);
+}
+
+function setColabFile(file) {
+  _colabArquivo = file;
+  document.getElementById("colab-filename").textContent = file.name;
+  document.getElementById("colab-drop").style.borderColor = "var(--accent)";
+}
+
 async function buscarColaboradores() {
-  const raw = document.getElementById("colab-input").value;
-  const termos = raw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
-  if (!termos.length) return;
   const msg = document.getElementById("colab-msg");
   const res_div = document.getElementById("colab-resultados");
-  msg.textContent = "Buscando...";
+  if (!_colabArquivo) { msg.textContent = "Selecione uma planilha primeiro."; return; }
+  msg.textContent = "Lendo planilha...";
   res_div.style.display = "none";
+  const form = new FormData();
+  form.append("arquivo", _colabArquivo);
   try {
-    const res = await fetch("/api/colaboradores/buscar", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({termos})
-    });
+    const res = await fetch("/api/colaboradores/upload", { method: "POST", body: form });
     const data = await res.json();
     if (data.erro) { msg.textContent = "Erro: " + data.erro; return; }
     const alunos = data.alunos || [];
-    if (!alunos.length) { msg.textContent = "Nenhum aluno encontrado."; return; }
-    msg.textContent = `${alunos.length} aluno(s) encontrado(s).`;
+    if (!alunos.length) {
+      msg.textContent = `Planilha lida (${data.lidos} termos). Nenhum aluno encontrado.`;
+      return;
+    }
+    msg.textContent = `${alunos.length} aluno(s) encontrado(s) de ${data.lidos} termos lidos.`;
     renderColaboradores(alunos);
     res_div.style.display = "block";
   } catch(e) { msg.textContent = "Erro na busca."; }
