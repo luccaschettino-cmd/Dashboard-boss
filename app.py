@@ -50,9 +50,23 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL)
 
 
-def validade_curso(titulo, regras=None):
+def get_validades_cursos():
+    """Retorna dict {titulo: dias} com mapeamento exato por curso. dias=None = não notificar."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT titulo, dias FROM validades_cursos")
+    rows = c.fetchall()
+    c.close()
+    conn.close()
+    return {r[0]: r[1] for r in rows}
+
+
+def validade_curso(titulo, regras=None, cursos_map=None):
     if not titulo:
         return VALIDADE_PADRAO
+    # Mapeamento exato por título tem prioridade
+    if cursos_map is not None and titulo in cursos_map:
+        return cursos_map[titulo]  # None = não notificar
     t = titulo.lower()
     for padrao, dias in (regras or get_validades()):
         if padrao in t:
@@ -85,6 +99,12 @@ def init_db():
                 synced_at TEXT NOT NULL
             )
         """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS validades_cursos (
+            titulo TEXT PRIMARY KEY,
+            dias INTEGER
+        )
+    """)
     c.execute("""
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
@@ -638,6 +658,7 @@ def norma_base(titulo):
 def compute_recert_lista(certificates, students_map, emails, canais, empresas):
     now = datetime.now()
     regras = get_validades()
+    cursos_map = get_validades_cursos()
     ultimo = {}
     for c in certificates:
         aluno = c.get("aluno_id")
@@ -657,8 +678,11 @@ def compute_recert_lista(certificates, students_map, emails, canais, empresas):
         concl = c.get("concluido")
         titulo = c.get("curso_titulo") or ""
         try:
+            dias_val = validade_curso(titulo, regras, cursos_map)
+            if dias_val is None:
+                continue  # curso marcado como "não notificar"
             dt = datetime.strptime(str(concl)[:10], "%Y-%m-%d")
-            dt_recert = dt + timedelta(days=validade_curso(titulo, regras))
+            dt_recert = dt + timedelta(days=dias_val)
             dias = (dt_recert - now).days
             if 0 <= dias <= 90:
                 aid = c.get("aluno_id")
@@ -1240,6 +1264,102 @@ def colaboradores_zip():
         download_name="certificados.zip",
         mimetype="application/zip",
     )
+
+
+@app.route("/api/validades/exportar")
+def validades_exportar():
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    certificates = load_table("certificates")
+    titulos = sorted({c.get("curso_titulo") or "" for c in certificates if c.get("curso_titulo")})
+
+    cursos_map = get_validades_cursos()
+    regras = get_validades()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Validades"
+
+    ws.append(["Curso", "Validade (anos)", "Observação"])
+
+    header_fill = PatternFill(start_color="1A1D27", end_color="1A1D27", fill_type="solid")
+    header_font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
+    obs_font = Font(name="Arial", color="888888", size=10, italic=True)
+    for col in range(1, 4):
+        cell = ws.cell(row=1, column=col)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    obs_text = "Deixe em branco para NÃO notificar alunos deste curso"
+    for titulo in titulos:
+        if titulo in cursos_map:
+            dias = cursos_map[titulo]
+            anos = "" if dias is None else round(dias / 365, 1)
+        else:
+            dias = validade_curso(titulo, regras)
+            anos = round(dias / 365, 1)
+        ws.append([titulo, anos, obs_text])
+        row_idx = ws.max_row
+        ws.cell(row=row_idx, column=3).font = obs_font
+
+    ws.column_dimensions["A"].width = 55
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 48
+    ws.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    nome = f"validades_cursos_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+    return send_file(buf, as_attachment=True, download_name=nome,
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/api/validades/importar", methods=["POST"])
+def validades_importar():
+    from openpyxl import load_workbook
+
+    if "arquivo" not in request.files:
+        return jsonify({"erro": "Nenhum arquivo enviado."}), 400
+    f = request.files["arquivo"]
+    try:
+        wb = load_workbook(f, read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+    except Exception as e:
+        return jsonify({"erro": f"Erro ao ler planilha: {e}"}), 400
+
+    if len(rows) < 2:
+        return jsonify({"erro": "Planilha vazia."}), 400
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM validades_cursos")
+    importados = 0
+    sem_validade = 0
+    for row in rows[1:]:
+        titulo = str(row[0] or "").strip()
+        if not titulo or titulo == "Curso":
+            continue
+        val = row[1] if len(row) > 1 else None
+        if val is None or str(val).strip() == "":
+            c.execute("INSERT INTO validades_cursos (titulo, dias) VALUES (%s, NULL) ON CONFLICT (titulo) DO UPDATE SET dias=NULL", (titulo,))
+            sem_validade += 1
+        else:
+            try:
+                anos = float(val)
+                dias = round(anos * 365)
+                c.execute("INSERT INTO validades_cursos (titulo, dias) VALUES (%s, %s) ON CONFLICT (titulo) DO UPDATE SET dias=EXCLUDED.dias", (titulo, dias))
+                importados += 1
+            except (ValueError, TypeError):
+                sem_validade += 1
+    conn.commit()
+    c.close()
+    conn.close()
+    return jsonify({"ok": True, "importados": importados, "sem_validade": sem_validade})
 
 
 if __name__ == "__main__":
