@@ -175,7 +175,7 @@
         <thead>
           <tr style="border-bottom:1px solid var(--border);">
             <th style="text-align:left;padding:6px 8px;color:var(--muted);font-weight:600;">Padrão (trecho do nome do curso)</th>
-            <th style="text-align:center;padding:6px 8px;color:var(--muted);font-weight:600;width:110px;">Validade (dias)</th>
+            <th style="text-align:center;padding:6px 8px;color:var(--muted);font-weight:600;width:110px;">Validade (anos)</th>
             <th style="width:36px;"></th>
           </tr>
         </thead>
@@ -185,7 +185,7 @@
 
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <div style="font-size:12px;color:var(--muted);">Padrão para cursos não listados:</div>
-      <input id="val-padrao-dias" type="number" min="1" style="width:80px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;"> dias
+      <input id="val-padrao-dias" type="number" min="0.5" step="0.5" style="width:80px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;"> anos
       <button onclick="addLinhaValidade()" style="margin-left:auto;padding:7px 14px;border:1px dashed var(--accent);background:transparent;color:var(--accent);border-radius:7px;font-size:13px;cursor:pointer;">+ Adicionar regra</button>
       <button onclick="salvarValidades()" style="padding:8px 20px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;">Salvar</button>
       <span id="val-msg" style="font-size:12px;color:var(--muted);"></span>
@@ -756,7 +756,7 @@ function renderValidades() {
         <input data-i="${i}" data-f="padrao" value="${v.padrao}" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;" oninput="updateVal(this)">
       </td>
       <td style="padding:5px 8px;text-align:center;">
-        <input data-i="${i}" data-f="dias" type="number" min="1" value="${v.dias}" style="width:90px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;text-align:center;" oninput="updateVal(this)">
+        <input data-i="${i}" data-f="dias" type="number" min="0.5" step="0.5" value="${(v.dias/365).toFixed(1).replace(/\.0$/,'')}" style="width:90px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;text-align:center;" oninput="updateVal(this)">
       </td>
       <td style="padding:5px 4px;text-align:center;">
         <button data-i="${i}" onclick="removeVal(this)" style="background:transparent;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px;" title="Remover">×</button>
@@ -766,12 +766,13 @@ function renderValidades() {
   // Campo validade padrão
   fetch("/api/validades").then(() => {}); // já carregado
   const meta = _validadesData.find(v => v._padrao);
-  document.getElementById("val-padrao-dias").value = 730;
+  document.getElementById("val-padrao-dias").value = 2;
 }
 
 function updateVal(input) {
   const i = +input.dataset.i, f = input.dataset.f;
-  _validadesData[i][f] = f === "dias" ? +input.value : input.value;
+  // campo "dias" exibe anos — converte para dias ao armazenar
+  _validadesData[i][f] = f === "dias" ? Math.round(+input.value * 365) : input.value;
 }
 
 function removeVal(btn) {
@@ -780,7 +781,7 @@ function removeVal(btn) {
 }
 
 function addLinhaValidade() {
-  _validadesData.push({ padrao: "", dias: 730 });
+  _validadesData.push({ padrao: "", dias: 730 }); // 730 dias = 2 anos (default)
   renderValidades();
   // Foca no último input de padrão
   const inputs = document.querySelectorAll("#validades-body input[data-f='padrao']");
