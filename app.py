@@ -596,6 +596,7 @@ def compute_recert_lista(certificates, students_map, emails, canais, empresas):
     Deduplicação por (aluno_id, norma_base) — agrupa NR-33 2025 e NR-33 2026 como o mesmo curso.
     """
     now = datetime.now()
+    regras = get_validades()  # carrega uma vez só fora do loop
     ultimo = {}
     for c in certificates:
         aluno = c.get("aluno_id")
@@ -617,7 +618,7 @@ def compute_recert_lista(certificates, students_map, emails, canais, empresas):
         titulo = c.get("curso_titulo") or ""
         try:
             dt = datetime.strptime(str(concl)[:10], "%Y-%m-%d")
-            dt_recert = dt + timedelta(days=validade_curso(titulo))
+            dt_recert = dt + timedelta(days=validade_curso(titulo, regras))
             dias = (dt_recert - now).days
             if 0 <= dias <= 90:
                 aid = c.get("aluno_id")
