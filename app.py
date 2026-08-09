@@ -77,7 +77,7 @@ def init_db():
     conn = get_conn()
     c = conn.cursor()
     # Tabelas principais — id é TEXT para suportar IDs da API e fallback "o{offset}_{i}"
-    for table in ("enrollments", "certificates", "students", "progress"):
+    for table in ("enrollments", "certificates", "students"):
         c.execute(f"""
             CREATE TABLE IF NOT EXISTS {table} (
                 id TEXT PRIMARY KEY,
@@ -352,14 +352,12 @@ def do_sync(modo="completo"):
             n_enr = sync_endpoint_rapido("enrollment", "enrollments", "Matrículas", paginas=10)
             n_cert = sync_endpoint_rapido("certificate", "certificates", "Certificados", paginas=10)
             n_stu = sync_endpoint_rapido("student", "students", "Alunos", paginas=3, id_field="aluno_id")
-            n_prog = sync_endpoint_rapido("progress", "progress", "Progresso", paginas=10, id_field="matricula_id")
-            msg = f"Rápido — {n_enr} matrículas, {n_cert} certificados, {n_stu} alunos, {n_prog} progresso."
+            msg = f"Rápido — {n_enr} matrículas, {n_cert} certificados, {n_stu} alunos."
         else:
             n_enr = sync_endpoint("enrollment", "enrollments", "Matrículas")
             n_cert = sync_endpoint("certificate", "certificates", "Certificados")
             n_stu = sync_endpoint("student", "students", "Alunos", id_field="aluno_id")
-            n_prog = sync_endpoint("progress", "progress", "Progresso", id_field="matricula_id")
-            msg = f"Completo — {n_enr} matrículas, {n_cert} certificados, {n_stu} alunos, {n_prog} progresso."
+            msg = f"Completo — {n_enr} matrículas, {n_cert} certificados, {n_stu} alunos."
 
         now_str = datetime.now().isoformat()
         _salvar_meta_sync(now_str, modo)
@@ -713,8 +711,6 @@ def dashboard():
     except (ValueError, TypeError):
         ano = ano_atual
 
-    progress_data = load_table("progress")
-
     data = compute_vendas(enrollments, ano)
     lista = compute_recert_lista(certificates, students_map, emails, canais, empresas)
 
@@ -726,7 +722,7 @@ def dashboard():
 
     data["recert"] = {"r30": r30, "r60": r60, "r90": r90, "total": len(lista)}
     data["geo"] = [{"uf": k, "total": v} for k, v in geo[:15]]
-    data["funil"] = compute_funil(progress_data)
+    data["funil"] = {"concluido": 0, "andamento": 0, "nao_iniciado": 0, "total": 0}
     data["novos_recorrentes"] = compute_novos_recorrentes(enrollments, ano)
     data["conclusao_cursos"] = compute_conclusao_cursos(enrollments, certificates, ano)
     data["cache_info"] = {
